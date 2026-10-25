@@ -12,7 +12,7 @@ from par_textual_image import TerminalImage
 from PIL import Image
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Horizontal, Vertical
+from textual.containers import Center, Horizontal, Middle, Vertical
 from textual.screen import Screen
 from textual.widgets import Label, ProgressBar
 
@@ -224,16 +224,20 @@ class ArenaScreen(Screen[None]):
     # App.DEFAULT_CSS ("hatch: right $panel") and breaks stylesheet parsing.
     CSS: ClassVar[str] = (
         "Screen { background: #0B0B12; color: #CACACA; }\n"
-        "#arena { height: 16; }\n"
-        "#sprites { height: 2; }\n"
-        "#sprites TerminalImage { width: 8; height: 2; }\n"
-        "#foes { height: 8; }\n"
+        "#topbar { width: 1fr; height: 3; border: solid #952CF5; color: #CACACA; }\n"
+        "#arena { height: 1fr; border: solid #952CF5; }\n"
+        "#foes { height: 1fr; }\n"
+        ".foe-row { height: 3; }\n"
+        ".foe-row TerminalImage { width: 10; height: 3; }\n"
+        ".foe-word { width: 1fr; height: 3; content-align: left middle; }\n"
+        "#core-row { height: 3; align: center middle; }\n"
+        "#core-row TerminalImage { width: 10; height: 3; }\n"
         f"#bossbars {{ height: {MAX_BOSS_BARS}; }}\n"
-        "#fx { height: 1; color: #FFD23F; }\n"
-        "#topbar { height: 1; color: #CACACA; }\n"
-        "#typing { height: 1; color: #CACACA; }\n"
+        "#fx { width: 1fr; height: 1; color: #FFD23F; }\n"
+        "#typing { width: 1fr; height: 3; border: solid #952CF5; dock: bottom; "
+        "color: #CACACA; }\n"
         "#stun { height: 1; color: #FFD23F; }\n"
-        "#guard { height: 1; color: #FF2A2A; }\n"
+        "#guard { height: 1; color: #FF2A2A; text-align: center; }\n"
         "#death { height: 2; color: #FF2A2A; text-style: bold; }\n"
     )
 
@@ -286,7 +290,6 @@ class ArenaScreen(Screen[None]):
         self._hits: int = 0
         self._killer: str | None = None
         self._foes_render: Text = Text("")
-        self._sprite_files: tuple[str, ...] = ()
         self._boss_bars: list[ProgressBar] = [
             ProgressBar(total=1, show_bar=True, show_percentage=False)
             for _ in range(MAX_BOSS_BARS)
@@ -380,20 +383,23 @@ class ArenaScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Header, sprite strip, arena, fx ribbon, typing line, flags, death."""
+        """Header, foe sprite+word rows, core, boss bars, fx, typing, flags."""
         yield Label("", id="topbar")
         with Vertical(id="arena"):
-            with Horizontal(id="sprites"):
-                yield TerminalImage(id="core-sprite")
+            with Vertical(id="foes"):
                 for index in range(MAX_FOES):
-                    yield TerminalImage(id=f"foe-sprite-{index}")
-            yield Label("", id="foes")
+                    with Horizontal(id=f"foe-row-{index}", classes="foe-row"):
+                        yield TerminalImage(id=f"foe-sprite-{index}")
+                        yield Label("", id=f"foe-word-{index}", classes="foe-word")
+            with Horizontal(id="core-row"):
+                yield TerminalImage(id="core-sprite")
+                yield Label("SANCTUARY CORE", id="core-line")
             with Vertical(id="bossbars"):
                 yield from self._boss_bars
         yield Label("", id="fx")
         yield Label("", id="typing")
         yield Label("", id="stun")
-        yield Label("", id="guard")
+        yield Label("widen to 80+ columns to play", id="guard")
         yield Label("", id="death")
 
     def on_mount(self) -> None:
@@ -623,10 +629,14 @@ class ArenaScreen(Screen[None]):
             compact=compact,
             shake=overlay.shake,
         )
-        self.query_one("#foes", Label).update(self._foes_render)
+        self._refresh_foe_rows(
+            frame_tick,
+            compact=compact,
+            shake=overlay.shake,
+            hit=hit,
+        )
         ribbon = fx_line(overlay) or ambient_line(max(self.size.width, 1), frame_tick)
         self.query_one("#fx", Label).update(Text(ribbon))
-        self._refresh_sprites(frame_tick, hit=hit)
         self._refresh_boss_bars()
         if state.current is None:
             self.query_one("#typing", Label).update(Text(""))
@@ -653,6 +663,38 @@ class ArenaScreen(Screen[None]):
             return "!"
         return ""
 
+    def _foe_line(
+        self,
+        foe: ArenaEnemy,
+        frame_tick: int = 0,
+        *,
+        compact: bool = False,
+        shake: int = 0,
+    ) -> Text:
+        """One foe row: approach indent, sprite glyph, word (prefix lit).
+
+        The PNG pool carries the hit-flash frame; the glyph never changes so
+        glyph identity survives even where true-pixel cannot render.
+        """
+        text = Text()
+        drift = approach_indent(foe.distance, compact=compact)
+        prefix = f"{' ' * shake}{drift}{sprite_text(foe.kind, frame_tick)}"
+        prefix += f"{self._telegraph_warn(foe)} "
+        raw = str(foe.word.text)
+        state = self._arena
+        if not self.mono and foe.id == state.current and 0 < state.typed <= len(raw):
+            _ = text.append(prefix)
+            _ = text.append(raw[: state.typed], style=HP_GREEN)
+            _ = text.append(
+                raw[state.typed : state.typed + 1],
+                style=f"underline {GOLD_NEXT}",
+            )
+            _ = text.append(raw[state.typed + 1 :])
+        else:
+            # Mono strips color only: corruption still reads via glyphs.
+            _ = text.append(prefix + corrupted_display(foe.word))
+        return text
+
     def _foes_text(
         self,
         frame_tick: int = 0,
@@ -660,64 +702,71 @@ class ArenaScreen(Screen[None]):
         compact: bool = False,
         shake: int = 0,
     ) -> Text:
-        """Foe lines: approach indent, sprite glyph, word (typed prefix lit).
-
-        The PNG pool carries the hit-flash frame; the glyph never changes so
-        glyph identity survives even where true-pixel cannot render.
-        """
-        state = self._arena
+        """Aggregate foe lines (plain-text path; live rows paint each line)."""
         text = Text()
-        for index, foe in enumerate(state.enemies):
+        for index, foe in enumerate(self._arena.enemies):
             if index:
                 _ = text.append("\n")
-            drift = approach_indent(foe.distance, compact=compact)
-            prefix = f"{' ' * shake}{drift}{sprite_text(foe.kind, frame_tick)}"
-            prefix += f"{self._telegraph_warn(foe)} "
-            raw = str(foe.word.text)
-            if (
-                not self.mono
-                and foe.id == state.current
-                and 0 < state.typed <= len(raw)
-            ):
-                _ = text.append(prefix)
-                _ = text.append(raw[: state.typed], style=HP_GREEN)
-                _ = text.append(
-                    raw[state.typed : state.typed + 1],
-                    style=f"underline {GOLD_NEXT}",
-                )
-                _ = text.append(raw[state.typed + 1 :])
-            else:
-                # Mono strips color only: corruption still reads via glyphs.
-                _ = text.append(prefix + corrupted_display(foe.word))
+            _ = text.append_text(
+                self._foe_line(foe, frame_tick, compact=compact, shake=shake),
+            )
         return text
 
-    def _refresh_sprites(self, frame_tick: int, *, hit: bool) -> None:
-        """Pool update: core pulse plus one PNG per foe, paths only on change."""
-        files = [
+    def _set_sprite_image(
+        self,
+        widget: TerminalImage,
+        filename: str,
+    ) -> None:
+        """Show one cached sprite; missing art hides without leaking ids."""
+        pic = sprite_image(filename)
+        if pic is None:
+            widget.display = False
+            if widget.image is not None:
+                widget.image = None
+            return
+        widget.display = True
+        if widget.image is not pic:
+            widget.image = pic
+
+    def _refresh_foe_rows(
+        self,
+        frame_tick: int,
+        *,
+        compact: bool,
+        shake: int,
+        hit: bool,
+    ) -> None:
+        """Bind one sprite+word row per foe; hidden rows release kitty ids.
+
+        Setting ``image = None`` runs the renderer's cleanup, so pooled
+        slots never hold stale true-pixel textures while hidden.
+        """
+        foes = self._arena.enemies
+        self._set_sprite_image(
+            self.query_one("#core-sprite", TerminalImage),
             core_sprite_file(
                 hit=low_hp(self._arena.hp, self._arena.max_hp),
                 tick=frame_tick,
             ),
-        ]
-        files.extend(
-            foe_sprite_file(foe.kind, hit=hit, tick=frame_tick)
-            for foe in self._arena.enemies
         )
-        key = tuple(files)
-        if key == self._sprite_files:
-            return
-        self._sprite_files = key
-        for index, widget in enumerate(self.query(TerminalImage)):
-            if index >= len(files):
-                widget.display = False
+        for index in range(MAX_FOES):
+            row = self.query_one(f"#foe-row-{index}", Horizontal)
+            sprite = self.query_one(f"#foe-sprite-{index}", TerminalImage)
+            if index >= len(foes):
+                if row.display:
+                    row.display = False
+                    sprite.display = False
+                    if sprite.image is not None:
+                        sprite.image = None
                 continue
-            pic = sprite_image(files[index])
-            if pic is None:
-                widget.display = False
-                continue
-            widget.display = True
-            if widget.image is not pic:
-                widget.image = pic
+            row.display = True
+            self._set_sprite_image(
+                sprite,
+                foe_sprite_file(foes[index].kind, hit=hit, tick=frame_tick),
+            )
+            self.query_one(f"#foe-word-{index}", Label).update(
+                self._foe_line(foes[index], frame_tick, compact=compact, shake=shake),
+            )
 
     def _refresh_boss_bars(self) -> None:
         """Stacked ProgressBars: one full bar per remaining boss bar."""
@@ -795,14 +844,21 @@ class HubScreen(Screen[None]):
     """Blood Neon Void menu: banner, selectable list, wallet, key hints."""
 
     CSS: ClassVar[str] = (
-        "Screen { background: #0B0B12; color: #CACACA; border: solid #952CF5; }\n"
-        "#hub-banner { height: 3; color: #FF2A2A; text-style: bold; }\n"
-        "#subtitle { color: #B57CFF; }\n"
-        "#gold { color: #FFD23F; text-style: bold; }\n"
-        "#hub-greeting { height: 1; color: #CACACA; }\n"
-        "#hub-list { height: 6; }\n"
-        "#hub-message { height: 1; color: #FFD23F; }\n"
-        "#hub-hint { color: #24AEEB; }\n"
+        "Screen { background: #0B0B12; color: #CACACA; }\n"
+        "#hub-hint { dock: bottom; width: 1fr; height: 1; color: #24AEEB; "
+        "text-align: center; }\n"
+        "#hub-center { height: 1fr; }\n"
+        "#hub-column { width: 1fr; height: auto; align: center middle; }\n"
+        "#hub-banner { width: 1fr; height: 3; color: #FF2A2A; "
+        "text-style: bold; text-align: center; }\n"
+        "#subtitle { width: 1fr; height: 1; color: #B57CFF; text-align: center; }\n"
+        "#hub-header { width: 80%; height: 4; border: solid #952CF5; }\n"
+        "#gold { width: 1fr; height: 1; color: #FFD23F; text-style: bold; "
+        "text-align: center; }\n"
+        "#hub-greeting { width: 1fr; height: 1; color: #CACACA; text-align: center; }\n"
+        "#hub-panel { width: 80%; height: 9; border: solid #952CF5; }\n"
+        "#hub-list { width: 1fr; height: 6; }\n"
+        "#hub-message { width: 1fr; height: 1; color: #FFD23F; }\n"
     )
 
     def __init__(self, app: TypeSurvivorsApp) -> None:
@@ -818,23 +874,32 @@ class HubScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Banner, subtitle, wallet, greeting, selectable list, key hint."""
-        yield Label(hub_banner_text(mono=not colors_enabled()), id="hub-banner")
-        yield Label("type fast or be eaten by the void", id="subtitle")
-        yield Label(f"gold {self._app_ref.profile.gold}", id="gold")
-        yield Label(
-            hub_greeting(
-                gold=self._app_ref.profile.gold,
-                runs=len(self._app_ref.profile.runs),
-            ),
-            id="hub-greeting",
-        )
-        yield Label("", id="hub-list")
-        yield Label("", id="hub-message")
+        """Centered banner, header panel, menu panel, footer hint docked."""
         yield Label(
             "S start  P practice  R resume  H shop  E settings  Q quit",
             id="hub-hint",
         )
+        with (
+            Center(id="hub-center"),
+            Middle(id="hub-middle"),
+            Vertical(
+                id="hub-column",
+            ),
+        ):
+            yield Label(hub_banner_text(mono=not colors_enabled()), id="hub-banner")
+            yield Label("type fast or be eaten by the void", id="subtitle")
+            with Vertical(id="hub-header"):
+                yield Label(f"gold {self._app_ref.profile.gold}", id="gold")
+                yield Label(
+                    hub_greeting(
+                        gold=self._app_ref.profile.gold,
+                        runs=len(self._app_ref.profile.runs),
+                    ),
+                    id="hub-greeting",
+                )
+            with Vertical(id="hub-panel"):
+                yield Label("", id="hub-list")
+                yield Label("", id="hub-message")
 
     def on_mount(self) -> None:
         """Paint the selectable list once the widgets exist."""

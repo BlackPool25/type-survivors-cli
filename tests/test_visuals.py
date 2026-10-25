@@ -10,6 +10,7 @@ from typing import Final
 from par_textual_image import TerminalImage
 from rich.text import Text
 from textual import events
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Label
 
 from tsurv.app import BOSS_EVERY, ArenaScreen, HubScreen, TypeSurvivorsApp
@@ -41,6 +42,12 @@ _BANNER_ROWS: Final = 3
 _CORE_PLUS_TWO: Final = 3
 _CORE_PLUS_ONE: Final = 2
 _NARROW_WIDTH: Final = 80
+_FIELD_ROWS_MIN: Final = 6
+"""Foe field keeps at least two rows visible at the smallest viewport."""
+_GUARD_CELLS: Final = 2
+"""True-pixel guard: widget content must clear 2 cells on every protocol."""
+_CORE_OFF_TOLERANCE: Final = 8
+"""Core sprite center may trail the row center by half a word chip."""
 
 
 def test_foe_frames_alternate_idle_and_bob() -> None:
@@ -288,5 +295,129 @@ def test_pilot_slow_mo_paints_tint_marker() -> None:
             assert screen.slow_mo_active
             topbar = screen.query_one("#topbar", Label).content
             assert "SLO-MO" in str(topbar)
+
+    asyncio.run(_scenario())
+
+
+def test_pilot_hub_centered_bordered_panels() -> None:
+    """Banner text centers full-width; menu/header sit in bordered panels."""
+
+    async def _scenario(size: tuple[int, int]) -> None:
+        app = TypeSurvivorsApp(
+            initial_words=(),
+            spawn_enabled=False,
+            profile=Profile(),
+            start_at_hub=True,
+        )
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, HubScreen)
+            width, height = size
+            banner = screen.query_one("#hub-banner", Label)
+            assert banner.region.width == width
+            assert banner.styles.text_align == "center"
+            panel = screen.query_one("#hub-panel", Vertical)
+            assert panel.styles.border_top[0] == "solid"
+            assert screen.query_one("#hub-list", Label).parent is panel
+            header = screen.query_one("#hub-header", Vertical)
+            assert header.styles.border_top[0] == "solid"
+            assert screen.query_one("#hub-greeting", Label).parent is header
+            assert screen.query_one("#gold", Label).parent is header
+            hint = screen.query_one("#hub-hint", Label)
+            assert hint.region.bottom == height
+            assert hint.region.width == width
+
+    asyncio.run(_scenario((80, 24)))
+    asyncio.run(_scenario((120, 30)))
+
+
+def test_pilot_arena_sections_fill_viewport() -> None:
+    """Topbar/field/fx/input stack edge-to-edge; field fills the remainder."""
+
+    async def _scenario(size: tuple[int, int]) -> None:
+        app = TypeSurvivorsApp(initial_words=("cat", "dog"), spawn_enabled=False)
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            width, height = size
+            topbar = screen.query_one("#topbar", Label)
+            arena = screen.query_one("#arena", Vertical)
+            field = screen.query_one("#foes", Vertical)
+            typing = screen.query_one("#typing", Label)
+            assert topbar.region.width == width
+            assert arena.region.y == topbar.region.y + topbar.region.height
+            assert arena.region.height > field.region.height
+            assert field.region.height >= _FIELD_ROWS_MIN
+            assert typing.region.bottom == height
+            assert typing.region.width == width
+            row = screen.query_one("#foe-row-0", Horizontal)
+            sprite = screen.query_one("#foe-sprite-0", TerminalImage)
+            assert sprite.region.width > _GUARD_CELLS
+            assert sprite.region.height > _GUARD_CELLS
+            assert row.region.width == arena.region.width - _GUARD_CELLS
+            core_row = screen.query_one("#core-row", Horizontal)
+            core = screen.query_one("#core-sprite", TerminalImage)
+            row_cx = core_row.region.x + core_row.region.width // 2
+            core_cx = core.region.x + core.region.width // 2
+            assert abs(row_cx - core_cx) <= _CORE_OFF_TOLERANCE
+
+    asyncio.run(_scenario((80, 24)))
+    asyncio.run(_scenario((120, 30)))
+
+
+def test_pilot_sprite_bound_to_foe_row() -> None:
+    """Each foe row pairs its own sprite with its word; kills rebind rows."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(initial_words=("cat", "dog"), spawn_enabled=False)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            foes = screen.arena_state.enemies
+            assert [str(foe.word.text) for foe in foes] == ["cat", "dog"]
+            for index, foe in enumerate(foes):
+                row = screen.query_one(f"#foe-row-{index}", Horizontal)
+                assert row.display
+                sprite = screen.query_one(f"#foe-sprite-{index}", TerminalImage)
+                assert sprite.display
+                assert sprite.image is not None
+                content = screen.query_one(f"#foe-word-{index}", Label).content
+                plain = content.plain if isinstance(content, Text) else str(content)
+                assert str(foe.word.text) in plain
+            assert screen.query_one("#foe-sprite-2", TerminalImage).display is False
+            for char in str(foes[0].word.text):
+                await screen.on_key(events.Key(char, char))
+            await pilot.pause()
+            assert len(screen.arena_state.enemies) == 1
+            survivor = str(screen.arena_state.enemies[0].word.text)
+            content = screen.query_one("#foe-word-0", Label).content
+            plain = content.plain if isinstance(content, Text) else str(content)
+            assert survivor in plain
+            freed = screen.query_one("#foe-sprite-1", TerminalImage)
+            assert freed.display is False
+            assert freed.image is None
+
+    asyncio.run(_scenario())
+
+
+def test_pilot_guard_names_the_fix() -> None:
+    """Narrow windows name the 80-column fix; the message fits the guard."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(initial_words=("cat",), spawn_enabled=False)
+        async with app.run_test(size=(60, 24)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            guard = screen.query_one("#guard", Label)
+            assert guard.display is True
+            content = guard.content
+            plain = content.plain if isinstance(content, Text) else str(content)
+            assert plain.strip() != ""
+            assert "80" in plain
+            assert len(plain.strip()) < _NARROW_WIDTH
 
     asyncio.run(_scenario())
