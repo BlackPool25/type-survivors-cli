@@ -8,9 +8,11 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Final, assert_never, override
 
+from par_textual_image import TerminalImage
+from PIL import Image
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Label, ProgressBar
 
@@ -62,6 +64,23 @@ from tsurv.screens import (
     snapshot,
     update_settings,
 )
+from tsurv.visuals import (
+    BOB_FPS,
+    COMPACT_WIDTH,
+    HUB_ENTRIES,
+    ambient_line,
+    approach_indent,
+    core_sprite_file,
+    foe_hit_showing,
+    foe_sprite_file,
+    fx_line,
+    hub_banner_text,
+    hub_greeting,
+    hub_list_text,
+    juice_overlay,
+    shop_row_text,
+    sprite_path,
+)
 from tsurv.words import (
     TIER_WORDS,
     Tier,
@@ -78,6 +97,23 @@ if TYPE_CHECKING:
 
 GUARD_WIDTH: Final = 80
 """Windows narrower than this show the guard screen instead of the arena."""
+
+_sprite_cache: dict[str, Image.Image] = {}
+"""Loaded sprite art, cached so TerminalImage never holds file handles open."""
+
+
+def sprite_image(filename: str) -> Image.Image | None:
+    """Load sprite bytes once, cached; None when the asset file is missing."""
+    if filename not in _sprite_cache:
+        path = sprite_path(filename)
+        if not path.is_file():
+            return None
+        with Image.open(path) as handle:
+            pic = handle.convert("RGBA")
+            _ = pic.load()
+        _sprite_cache[filename] = pic
+    return _sprite_cache[filename]
+
 
 MAX_BOSS_BARS: Final = 6
 """Stacked ProgressBar pool; boss HP above this clamps the display."""
@@ -188,13 +224,16 @@ class ArenaScreen(Screen[None]):
     # App.DEFAULT_CSS ("hatch: right $panel") and breaks stylesheet parsing.
     CSS: ClassVar[str] = (
         "Screen { background: #0B0B12; color: #CACACA; }\n"
-        "#arena { height: 12; }\n"
-        "#foes { height: 6; }\n"
+        "#arena { height: 16; }\n"
+        "#sprites { height: 2; }\n"
+        "#sprites TerminalImage { width: 8; height: 2; }\n"
+        "#foes { height: 8; }\n"
         f"#bossbars {{ height: {MAX_BOSS_BARS}; }}\n"
+        "#fx { height: 1; color: #FFD23F; }\n"
         "#topbar { height: 1; color: #CACACA; }\n"
         "#typing { height: 1; color: #CACACA; }\n"
         "#stun { height: 1; color: #FFD23F; }\n"
-        "#guard { height: 3; color: #FF2A2A; }\n"
+        "#guard { height: 1; color: #FF2A2A; }\n"
         "#death { height: 2; color: #FF2A2A; text-style: bold; }\n"
     )
 
@@ -247,6 +286,7 @@ class ArenaScreen(Screen[None]):
         self._hits: int = 0
         self._killer: str | None = None
         self._foes_render: Text = Text("")
+        self._sprite_files: tuple[str, ...] = ()
         self._boss_bars: list[ProgressBar] = [
             ProgressBar(total=1, show_bar=True, show_percentage=False)
             for _ in range(MAX_BOSS_BARS)
@@ -340,19 +380,27 @@ class ArenaScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Header, fixed-height arena, typing line, flags, guard, death."""
+        """Header, sprite strip, arena, fx ribbon, typing line, flags, death."""
         yield Label("", id="topbar")
         with Vertical(id="arena"):
+            with Horizontal(id="sprites"):
+                yield TerminalImage(id="core-sprite")
+                for index in range(MAX_FOES):
+                    yield TerminalImage(id=f"foe-sprite-{index}")
             yield Label("", id="foes")
             with Vertical(id="bossbars"):
                 yield from self._boss_bars
+        yield Label("", id="fx")
         yield Label("", id="typing")
         yield Label("", id="stun")
         yield Label("", id="guard")
         yield Label("", id="death")
 
     def on_mount(self) -> None:
-        """First paint, viewport guard, then the 60fps tick."""
+        """First paint, mosaic fallback, viewport guard, then the 60fps tick."""
+        if not true_pixel_available():
+            for widget in self.query(TerminalImage):
+                widget.force_protocol("halfblock")
         self._refresh()
         self.check_viewport()
         _ = self.set_interval(1 / 60, self._tick)
@@ -554,18 +602,31 @@ class ArenaScreen(Screen[None]):
             self._arena, _ = chain_lightning(self._arena, foe.id)
 
     def _refresh(self) -> None:
-        """Repaint header, foes, boss bars, typing line, and flags."""
+        """Repaint header, sprites, foes, fx ribbon, boss bars, flags."""
         state = self._arena
         now = time.monotonic()
+        overlay = juice_overlay(self._juice, now)
+        frame_tick = int(self._run_clock * BOB_FPS)
+        compact = self.size.width < COMPACT_WIDTH
+        hit = foe_hit_showing(self._juice, now)
         wpm = rolling_wpm(self._kill_times, now)
         accuracy = self._hits / self._presses if self._presses else 1.0
         vitals = f"HP {state.hp:.0f}  WPM {wpm:.0f}  x{state.streak}"
         if low_hp(state.hp, state.max_hp):
             vitals += " LOW"
+        if overlay.slow:
+            vitals += " SLO-MO"
         progress = f"wave {state.wave}  score {int(state.score)}  acc {accuracy:.0%}"
         self.query_one("#topbar", Label).update(Text(f"{vitals}  {progress}"))
-        self._foes_render = self._foes_text()
+        self._foes_render = self._foes_text(
+            frame_tick,
+            compact=compact,
+            shake=overlay.shake,
+        )
         self.query_one("#foes", Label).update(self._foes_render)
+        ribbon = fx_line(overlay) or ambient_line(max(self.size.width, 1), frame_tick)
+        self.query_one("#fx", Label).update(Text(ribbon))
+        self._refresh_sprites(frame_tick, hit=hit)
         self._refresh_boss_bars()
         if state.current is None:
             self.query_one("#typing", Label).update(Text(""))
@@ -592,14 +653,26 @@ class ArenaScreen(Screen[None]):
             return "!"
         return ""
 
-    def _foes_text(self) -> Text:
-        """Foe lines: half-block sprite glyph plus word (typed prefix lit)."""
+    def _foes_text(
+        self,
+        frame_tick: int = 0,
+        *,
+        compact: bool = False,
+        shake: int = 0,
+    ) -> Text:
+        """Foe lines: approach indent, sprite glyph, word (typed prefix lit).
+
+        The PNG pool carries the hit-flash frame; the glyph never changes so
+        glyph identity survives even where true-pixel cannot render.
+        """
         state = self._arena
         text = Text()
         for index, foe in enumerate(state.enemies):
             if index:
                 _ = text.append("\n")
-            prefix = f"{sprite_text(foe.kind)}{self._telegraph_warn(foe)} "
+            drift = approach_indent(foe.distance, compact=compact)
+            prefix = f"{' ' * shake}{drift}{sprite_text(foe.kind, frame_tick)}"
+            prefix += f"{self._telegraph_warn(foe)} "
             raw = str(foe.word.text)
             if (
                 not self.mono
@@ -617,6 +690,34 @@ class ArenaScreen(Screen[None]):
                 # Mono strips color only: corruption still reads via glyphs.
                 _ = text.append(prefix + corrupted_display(foe.word))
         return text
+
+    def _refresh_sprites(self, frame_tick: int, *, hit: bool) -> None:
+        """Pool update: core pulse plus one PNG per foe, paths only on change."""
+        files = [
+            core_sprite_file(
+                hit=low_hp(self._arena.hp, self._arena.max_hp),
+                tick=frame_tick,
+            ),
+        ]
+        files.extend(
+            foe_sprite_file(foe.kind, hit=hit, tick=frame_tick)
+            for foe in self._arena.enemies
+        )
+        key = tuple(files)
+        if key == self._sprite_files:
+            return
+        self._sprite_files = key
+        for index, widget in enumerate(self.query(TerminalImage)):
+            if index >= len(files):
+                widget.display = False
+                continue
+            pic = sprite_image(files[index])
+            if pic is None:
+                widget.display = False
+                continue
+            widget.display = True
+            if widget.image is not pic:
+                widget.image = pic
 
     def _refresh_boss_bars(self) -> None:
         """Stacked ProgressBars: one full bar per remaining boss bar."""
@@ -691,13 +792,15 @@ class ReportScreen(Screen[None]):
 
 
 class HubScreen(Screen[None]):
-    """Blood Neon Void menu: start, practice, resume, shop, settings."""
+    """Blood Neon Void menu: banner, selectable list, wallet, key hints."""
 
     CSS: ClassVar[str] = (
-        "Screen { background: #0B0B12; color: #CACACA; }\n"
-        "#title { color: #FF2A2A; text-style: bold; }\n"
-        "#subtitle { color: #952CF5; }\n"
+        "Screen { background: #0B0B12; color: #CACACA; border: solid #952CF5; }\n"
+        "#hub-banner { height: 3; color: #FF2A2A; text-style: bold; }\n"
+        "#subtitle { color: #B57CFF; }\n"
         "#gold { color: #FFD23F; text-style: bold; }\n"
+        "#hub-greeting { height: 1; color: #CACACA; }\n"
+        "#hub-list { height: 6; }\n"
         "#hub-message { height: 1; color: #FFD23F; }\n"
         "#hub-hint { color: #24AEEB; }\n"
     )
@@ -706,22 +809,46 @@ class HubScreen(Screen[None]):
         """Hold the app link; every menu key delegates to one app method."""
         super().__init__()
         self._app_ref: TypeSurvivorsApp = app
+        self._selected: int = 0
+
+    @property
+    def selected(self) -> int:
+        """Highlighted menu row (tests drive it via j/k navigation)."""
+        return self._selected % len(HUB_ENTRIES)
 
     @override
     def compose(self) -> ComposeResult:
-        """Title, wallet, menu verbs, and the key hint."""
-        yield Label("TYPE SURVIVORS", id="title")
+        """Banner, subtitle, wallet, greeting, selectable list, key hint."""
+        yield Label(hub_banner_text(mono=not colors_enabled()), id="hub-banner")
         yield Label("type fast or be eaten by the void", id="subtitle")
         yield Label(f"gold {self._app_ref.profile.gold}", id="gold")
+        yield Label(
+            hub_greeting(
+                gold=self._app_ref.profile.gold,
+                runs=len(self._app_ref.profile.runs),
+            ),
+            id="hub-greeting",
+        )
+        yield Label("", id="hub-list")
         yield Label("", id="hub-message")
         yield Label(
             "S start  P practice  R resume  H shop  E settings  Q quit",
             id="hub-hint",
         )
 
-    async def on_key(self, event: events.Key) -> None:
-        """Route one menu keypress to its app navigation method."""
-        match event.key:
+    def on_mount(self) -> None:
+        """Paint the selectable list once the widgets exist."""
+        self._refresh_hub()
+
+    def _refresh_hub(self) -> None:
+        """Repaint the highlighted menu row."""
+        self.query_one("#hub-list", Label).update(
+            hub_list_text(HUB_ENTRIES, self._selected, mono=not colors_enabled()),
+        )
+
+    def _press(self, key: str) -> None:
+        """Route one menu hotkey to its app navigation method."""
+        match key:
             case "s":
                 self._app_ref.start_run()
             case "p":
@@ -740,14 +867,29 @@ class HubScreen(Screen[None]):
             case _:
                 return
 
+    async def on_key(self, event: events.Key) -> None:
+        """Route hotkeys; j/k move the highlight, enter activates it."""
+        match event.key:
+            case "j" | "down":
+                self._selected = (self._selected + 1) % len(HUB_ENTRIES)
+                self._refresh_hub()
+            case "k" | "up":
+                self._selected = (self._selected - 1) % len(HUB_ENTRIES)
+                self._refresh_hub()
+            case "enter":
+                self._press(HUB_ENTRIES[self.selected].key.lower())
+            case _:
+                self._press(event.key)
+
 
 class ShopScreen(Screen[None]):
     """Meta shop: number keys buy permanent perks, then return to arena."""
 
     CSS: ClassVar[str] = (
-        "Screen { background: #0B0B12; color: #CACACA; }\n"
+        "Screen { background: #0B0B12; color: #CACACA; border: solid #952CF5; }\n"
+        "#shop-title { color: #FF2A2A; text-style: bold; }\n"
         "#shop-gold { color: #FFD23F; text-style: bold; }\n"
-        "#shop-message { height: 1; color: #FF2A2A; }\n"
+        "#shop-message { height: 1; color: #FFD23F; }\n"
         "#shop-hint { color: #24AEEB; }\n"
     )
 
@@ -764,11 +906,17 @@ class ShopScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Wallet, one numbered row per catalog perk, and the key hint."""
+        """Title, wallet, one numbered row per catalog perk, key hint."""
+        yield Label("VOID MARKET", id="shop-title")
         yield Label(f"gold {self._profile.gold}", id="shop-gold")
         for index, item in enumerate(SHOP_CATALOG, start=1):
-            owned = "OWNED" if item.id in self._profile.shop else f"{item.price}g"
-            yield Label(f"{index} {item.name} — {owned}", id=f"shop-item-{index}")
+            row = shop_row_text(
+                item.name,
+                item.price,
+                item.blurb,
+                owned=item.id in self._profile.shop,
+            )
+            yield Label(f"{index} {row}", id=f"shop-item-{index}")
         yield Label("", id="shop-message")
         yield Label(
             "1-3 buy and return to arena  Q back without buying",
@@ -797,9 +945,10 @@ class SettingsScreen(Screen[None]):
     """Shell toggles: palette cycle plus sound/bold/shake switches."""
 
     CSS: ClassVar[str] = (
-        "Screen { background: #0B0B12; color: #CACACA; }\n"
+        "Screen { background: #0B0B12; color: #CACACA; border: solid #952CF5; }\n"
+        "#settings-title { color: #FF2A2A; text-style: bold; }\n"
         "#settings-gold { color: #FFD23F; text-style: bold; }\n"
-        "#settings-rows { height: 5; }\n"
+        "#settings-rows { height: 4; }\n"
         "#settings-hint { color: #24AEEB; }\n"
     )
 
@@ -811,7 +960,8 @@ class SettingsScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Render the current toggle values plus the key hint."""
+        """Title, wallet, current toggle values, and the key hint."""
+        yield Label("RITUAL CIRCLE", id="settings-title")
         yield Label(f"gold {self._profile.gold}", id="settings-gold")
         yield Label(self._rows(), id="settings-rows")
         yield Label("P palette  S sound  B bold  K shake  Q back", id="settings-hint")

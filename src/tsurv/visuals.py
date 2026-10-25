@@ -1,0 +1,245 @@
+"""Pure visual mapping: sprite frames, juice overlays, hub chrome, void drift.
+
+Widget-free on purpose: every helper here is a pure function of game state,
+so tests pin the display without a terminal. The arena screen mounts the PNGs
+through par-textual-image; this module only selects *what* shows.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Final, assert_never
+
+from rich.text import Text
+
+from tsurv.arena import EnemyKind
+
+if TYPE_CHECKING:
+    from tsurv.juice import JuiceState
+
+ASSETS_DIR: Final = Path(__file__).resolve().parent.parent.parent / "assets"
+"""Repo sprite art: boss/grunt/mite/hex/core PNGs plus the void backdrop."""
+
+APPROACH_MAX: Final = 16
+"""Widest approach indent in cells: far foes start right, glide core-ward."""
+
+COMPACT_WIDTH: Final = 120
+"""Below this width the arena halves approach indents, sprites stay legible."""
+
+AMBIENT_SEEDS: Final = 6
+"""Void specks per ambient line: deterministic in tick, never a state system."""
+
+BURST_GLYPHS: Final = 12
+"""Cap on death-burst glyphs so one kill never floods the fx line."""
+
+SHAKE_CELLS: Final = 2
+"""Max jitter cells at full trauma: rattle reads without hiding words."""
+
+_BEAM_LINE: Final = "═✦═ DIRECT HIT ═✦═"
+"""Kill-beam ribbon: Core to the fallen foe, shown inside the flash window."""
+
+_RING_LINE: Final = "((SHOCKWAVE))"
+"""Knockback ring text raised while a bar break blasts outward."""
+
+_BURST_CELL: Final = "*"
+"""One death-burst mote: ASCII so mono terminals keep the burst."""
+
+_SLOW_MARK: Final = "SLO-MO"
+"""Slow-mo tint marker: text first, color never the only signal."""
+
+BOB_FPS: Final = 6
+"""Sprite bob rate: idle/bob frames alternate six times a second."""
+
+_CORE_PULSE: Final = 4
+"""Core pulse period in ticks: frame swap reads as breathing."""
+
+_GLYPH_FONT: Final[dict[str, tuple[str, str, str]]] = {
+    "E": ("███", "██ ", "███"),
+    "I": (" █ ", " █ ", " █ "),
+    "O": (" █ ", "█ █", " █ "),
+    "P": ("███", "█ █", "███"),
+    "R": ("███", "███", "█ █"),
+    "S": (" ██", "███", "██ "),
+    "T": ("███", " █ ", " █ "),
+    "U": ("█ █", "█ █", "███"),
+    "V": ("█ █", "█ █", " █ "),
+    "Y": ("█ █", " █ ", " █ "),
+}
+"""3x3 block capitals for the hub banner (only banner letters, nothing else)."""
+
+BANNER_GRADIENT: Final[tuple[str, str, str]] = ("#FF2A2A", "#FFD23F", "#24AEEB")
+"""Banner row colors, top to bottom: red rage, gold glory, void blue."""
+
+
+def _render_word(word: str) -> tuple[str, str, str]:
+    """Set one word in the block font, single-space letter separators."""
+    glyphs = [_GLYPH_FONT[char] for char in word]
+    rows = [" ".join(parts) for parts in zip(*glyphs, strict=True)]
+    return (rows[0], rows[1], rows[2])
+
+
+def _render_banner(words: tuple[str, ...]) -> tuple[str, str, str]:
+    """Set banner words in the block font, triple-space word separators."""
+    rendered = [_render_word(word) for word in words]
+    rows = ["   ".join(parts) for parts in zip(*rendered, strict=True)]
+    return (rows[0], rows[1], rows[2])
+
+
+HUB_BANNER: Final[tuple[str, str, str]] = _render_banner(("TYPE", "SURVIVORS"))
+"""FIGlet-style title, pre-rendered once at import; callers copy by value."""
+
+
+@dataclass(frozen=True, slots=True)
+class HubEntry:
+    """One hub menu row: its hotkey, label, and hint (all plain text)."""
+
+    key: str
+    label: str
+    hint: str
+
+
+HUB_ENTRIES: Final[tuple[HubEntry, ...]] = (
+    HubEntry(key="S", label="start", hint="survive timed waves"),
+    HubEntry(key="P", label="practice", hint="no-death typing drills"),
+    HubEntry(key="R", label="resume", hint="restore the suspended run"),
+    HubEntry(key="H", label="shop", hint="spend run gold on perks"),
+    HubEntry(key="E", label="settings", hint="palette, sound, shake"),
+    HubEntry(key="Q", label="quit", hint="leave the void quietly"),
+)
+"""Menu rows in hotkey order; the hub screen highlights one at a time."""
+
+
+@dataclass(frozen=True, slots=True)
+class JuiceOverlay:
+    """Text-level attack juice derived from live JuiceState (no new state)."""
+
+    beam: str
+    burst: str
+    ring: bool
+    flash: bool
+    shake: int
+    slow: bool
+
+
+def foe_sprite_file(kind: EnemyKind, *, hit: bool, tick: int) -> str:
+    """PNG filename for a foe: hit-flash on damage, else idle/bob per tick.
+
+    shortcut: ELITE reuses hex art (no elite PNG ships), upgrade when it lands.
+    """
+    suffix = "hit" if hit else ("0" if tick % 2 == 0 else "1")
+    match kind:
+        case EnemyKind.GRUNT:
+            stem = "grunt"
+        case EnemyKind.MITE:
+            stem = "mite"
+        case EnemyKind.HEX | EnemyKind.ELITE:
+            stem = "hex"
+        case EnemyKind.BOSS:
+            stem = "boss"
+        case _:
+            assert_never(kind)
+    return f"{stem}_{suffix}.png"
+
+
+def core_sprite_file(*, hit: bool, tick: int) -> str:
+    """PNG filename for the Sanctuary Core: pulse swap, hit frame when critical."""
+    if hit:
+        return "core_hit.png"
+    return "core_0.png" if tick % _CORE_PULSE < _CORE_PULSE // 2 else "core_1.png"
+
+
+def sprite_path(filename: str) -> Path:
+    """Resolve a sprite filename against the repo assets directory."""
+    return ASSETS_DIR / filename
+
+
+def foe_hit_showing(juice: JuiceState, now: float) -> bool:
+    """Report whether foes should wear the hit frame (inside the flash window)."""
+    return now < juice.flash_until
+
+
+def approach_indent(distance: float, *, compact: bool) -> str:
+    """Spaces pushing far foes right so positions visibly glide core-ward."""
+    steps = min(int(distance), APPROACH_MAX)
+    if compact:
+        steps //= 2
+    return " " * steps
+
+
+def juice_overlay(juice: JuiceState, now: float) -> JuiceOverlay:
+    """Map live juice windows onto text overlays (beam/burst/ring/flash/shake)."""
+    motes = min(len(juice.particles), BURST_GLYPHS)
+    return JuiceOverlay(
+        beam=_BEAM_LINE if now < juice.flash_until else "",
+        burst=_BURST_CELL * motes,
+        ring=now < juice.knockback_until,
+        flash=now < juice.flash_until,
+        shake=round(juice.trauma * SHAKE_CELLS),
+        slow=now < juice.slow_mo_until,
+    )
+
+
+def fx_line(overlay: JuiceOverlay) -> str:
+    """Combine one tick of overlays into the single fx ribbon line."""
+    parts = [overlay.beam, overlay.burst]
+    if overlay.ring:
+        parts.append(_RING_LINE)
+    if overlay.slow:
+        parts.append(_SLOW_MARK)
+    return " ".join(part for part in parts if part)
+
+
+def ambient_line(width: int, tick: int) -> str:
+    """Slow drifting void specks: deterministic in tick, behind gameplay."""
+    cells = [" "] * max(width, 1)
+    span = max(width, 1)
+    for seed in range(AMBIENT_SEEDS):
+        cells[(seed * 13 + tick // BOB_FPS) % span] = "·"
+    return "".join(cells)
+
+
+def hub_banner_text(*, mono: bool) -> Text:
+    """Fresh banner copy per call: gradient spans in color, plain in mono."""
+    text = Text()
+    for index, row in enumerate(HUB_BANNER):
+        if index:
+            _ = text.append("\n")
+        if mono:
+            _ = text.append(row)
+        else:
+            _ = text.append(row, style=BANNER_GRADIENT[index % len(BANNER_GRADIENT)])
+    return text
+
+
+def hub_list_text(
+    entries: tuple[HubEntry, ...],
+    selected: int,
+    *,
+    mono: bool,
+) -> Text:
+    """Styled menu list: ▶ marker plus highlight on the selected row."""
+    text = Text()
+    for index, entry in enumerate(entries):
+        if index:
+            _ = text.append("\n")
+        marker = "▶ " if index == selected % len(entries) else "  "
+        row = f"{marker}{entry.key} {entry.label} — {entry.hint}"
+        if mono or index != selected % len(entries):
+            _ = text.append(row)
+        else:
+            _ = text.append(row, style="reverse bold")
+    return text
+
+
+def hub_greeting(*, gold: int, runs: int) -> str:
+    """Empty-profile send-off versus returning-player welcome (plain text)."""
+    if gold == 0 and runs == 0:
+        return "fresh soul — S to begin the first run"
+    return f"welcome back — {runs} runs, {gold}g banked"
+
+
+def shop_row_text(name: str, price: int, blurb: str, *, owned: bool) -> str:
+    """One shop row: OWNED tag or gold price, always beside the blurb."""
+    tag = "OWNED" if owned else f"{price}g"
+    return f"{name} — {tag} · {blurb}"
