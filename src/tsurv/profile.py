@@ -118,7 +118,7 @@ def load_profile(profile_dir: Path) -> Profile:
         return Profile()
     try:
         return Profile.model_validate_json(path.read_text(encoding="utf-8"))
-    except (OSError, ValidationError) as exc:
+    except (OSError, UnicodeDecodeError, ValidationError) as exc:
         msg = f"cannot load profile from {path}: {exc}"
         raise ProfileError(msg) from exc
 

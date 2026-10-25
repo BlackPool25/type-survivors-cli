@@ -62,6 +62,13 @@ def test_load_corrupt_json_raises(tmp_path: Path) -> None:
         _ = load_profile(tmp_path)
 
 
+def test_load_non_utf8_bytes_raises(tmp_path: Path) -> None:
+    """Binary garbage never leaks raw UnicodeDecodeError — ProfileError instead."""
+    _ = (tmp_path / "profile.json").write_bytes(b"\xff\xfe\x00bad")
+    with pytest.raises(ProfileError):
+        _ = load_profile(tmp_path)
+
+
 def test_load_bad_palette_raises(tmp_path: Path) -> None:
     """An unknown palette string fails load with ProfileError, not a default."""
     _ = (tmp_path / "profile.json").write_text(
