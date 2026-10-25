@@ -1462,6 +1462,7 @@ class HubScreen(Screen[None]):
         "#hub-hint { dock: bottom; width: 1fr; height: 1; color: #24AEEB; "
         "text-align: center; }\n"
         "#hub-center { height: 1fr; }\n"
+        "#hub-middle { width: 1fr; align-horizontal: center; }\n"
         "#hub-column { width: 1fr; height: auto; align: center middle; }\n"
         f"#hub-column {{ max-width: {HUB_COLUMN_MAX}; }}\n"
         "#hub-logo { width: 1fr; height: auto; text-align: center; }\n"

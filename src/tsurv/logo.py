@@ -44,6 +44,22 @@ def _luminance_cell(value: int) -> str:
     return _MONO_RAMP[min(value * bands // 256, bands - 1)]
 
 
+def _block_mean(
+    raw: bytes,
+    src_w: int,
+    cell: tuple[int, int],
+    grid: tuple[int, int],
+) -> int:
+    """Mean luminance of the source block behind one mono-bake cell."""
+    cx, cy = cell
+    cells_w, rows = grid
+    src_h = len(raw) // src_w
+    x0, x1 = cx * src_w // cells_w, (cx + 1) * src_w // cells_w
+    y0, y1 = cy * src_h // rows, (cy + 1) * src_h // rows
+    total = sum(raw[y * src_w + x] for y in range(y0, y1) for x in range(x0, x1))
+    return total // max((x1 - x0) * (y1 - y0), 1)
+
+
 def render_logo(cells_w: int, *, mono: bool = False) -> RenderedLogo:
     """Bake the logo PNG to exactly ``cells_w`` wide terminal cells.
 
@@ -61,24 +77,23 @@ def render_logo(cells_w: int, *, mono: bool = False) -> RenderedLogo:
     rows = max(1, round(image.height * cells_w / image.width / 2))
     match mono:
         case True:
-            raw: bytes = bytes(image.convert("L").tobytes())
-            width = image.width
-            height = image.height
-            lines: list[str] = []
-            for cy in range(rows):
-                sy = min(height - 1, cy * height // rows)
-                row = "".join(
-                    _luminance_cell(
-                        raw[sy * width + min(width - 1, cx * width // cells_w)],
-                    )
+            gray = image.convert("L")
+            src_w = gray.size[0]
+            raw: bytes = bytes(gray.tobytes())
+            lines: list[str] = [
+                "".join(
+                    _luminance_cell(_block_mean(raw, src_w, (cx, cy), (cells_w, rows)))
                     for cx in range(cells_w)
                 )
-                lines.append(row)
+                for cy in range(rows)
+            ]
             return RenderedLogo("\n".join(lines))
         case False:
+            # Halfcell pairs need a 2-rows-per-line image; Pixels downscales
+            # with NEAREST, whose odd sampling lands inside the 2px art grid.
             pixels = Pixels.from_image(
                 image,
-                resize=(cells_w, rows),
+                resize=(cells_w, rows * 2),
                 renderer=HalfcellRenderer(),
             )
             buffer = io.StringIO()

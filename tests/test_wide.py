@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Final
 from rich.text import Text
 from textual import events
 from textual.containers import Vertical
+from textual.widget import Widget
 from textual.widgets import Label
 
 from tsurv.app import (
@@ -77,6 +78,36 @@ def test_hub_stays_centered_at_200x50() -> None:
     column_w, header_w = asyncio.run(_scenario())
     assert column_w <= HUB_COLUMN_MAX
     assert header_w <= HUB_COLUMN_MAX
+
+
+def _absolute_x(widget: Widget) -> int:
+    """Screen-absolute x: region is parent-relative, so walk the DOM up."""
+    x: int = widget.region.x
+    parent = widget.parent
+    screen = widget.screen
+    while parent is not None and parent is not screen:
+        if isinstance(parent, Widget):
+            x += parent.region.x
+        parent = parent.parent
+    return x
+
+
+def test_hub_column_horizontally_centered_at_200x50() -> None:
+    """Ultrawide hub: the capped column sits centered, not left-anchored."""
+
+    async def _scenario() -> int:
+        app = TypeSurvivorsApp(
+            initial_words=("cat",),
+            spawn_enabled=False,
+            start_at_hub=True,
+        )
+        async with app.run_test(size=_WIDE) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, HubScreen)
+            return _absolute_x(screen.query_one("#hub-column", Vertical))
+
+    assert asyncio.run(_scenario()) == (_WIDE[0] - HUB_COLUMN_MAX) // 2
 
 
 def test_arena_centered_no_overflow_at_200x50() -> None:
