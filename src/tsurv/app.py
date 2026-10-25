@@ -36,6 +36,7 @@ from tsurv.arena import (
     seconds_to_impact,
     set_boss_wave,
     spawn_enemy,
+    world_xy,
 )
 from tsurv.combat import EnemyId, Kill, rolling_wpm, spawn_interval
 from tsurv.grammar import GrammarError, generate_boss_sentence
@@ -846,7 +847,8 @@ class ArenaScreen(Screen[None]):
         if is_bar_break(foe.kind, foe.hp_words):
             self._juice = trigger_bar_break(self._juice, now, self._rng)
         else:
-            self._juice = trigger_kill(self._juice, outcome.streak, now)
+            x, y = world_xy(foe)
+            self._juice = trigger_kill(self._juice, outcome.streak, now, x, y)
 
     def _calibrate_wave(self) -> None:
         """Write the wave-1 measured base rate onto the profile once."""

@@ -332,6 +332,16 @@ def test_trigger_kill_emits_blood_burst() -> None:
     assert [mote.color for mote in effect.particles[:3]] == list(BLOOD_PALETTE)
 
 
+def test_trigger_kill_burst_centered_on_kill_site() -> None:
+    """The blood burst lands on the foe, not the origin."""
+    effect = trigger_kill(JuiceState(), 1, _NOW, x=_KILL_X, y=_KILL_Y)
+    assert len(effect.particles) == PARTICLE_BURST
+    mean_x = sum(mote.x for mote in effect.particles) / len(effect.particles)
+    mean_y = sum(mote.y for mote in effect.particles) / len(effect.particles)
+    assert mean_x == _KILL_X
+    assert mean_y == _KILL_Y
+
+
 def test_boss_banner_freezes_timers() -> None:
     """Sim clocks hold still across the 2.5s banner; typing stays live."""
 

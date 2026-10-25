@@ -162,7 +162,13 @@ def trigger_bar_break(state: JuiceState, now: float, rng: random.Random) -> Juic
     )
 
 
-def trigger_kill(state: JuiceState, streak_after: int, now: float) -> JuiceState:
+def trigger_kill(
+    state: JuiceState,
+    streak_after: int,
+    now: float,
+    x: float = 0.0,
+    y: float = 0.0,
+) -> JuiceState:
     """Rattle the frame on a kill; arm 0.5s slow-mo on the x8 milestone."""
     slow_mo_until = state.slow_mo_until
     if streak_after > 0 and streak_after % SHIELD_STREAK_EVERY == 0:
@@ -171,7 +177,7 @@ def trigger_kill(state: JuiceState, streak_after: int, now: float) -> JuiceState
         state,
         slow_mo_until=slow_mo_until,
         trauma=min(1.0, state.trauma + TRAUMA_KILL),
-        particles=burst(),
+        particles=burst(x, y),
     )
 
 
