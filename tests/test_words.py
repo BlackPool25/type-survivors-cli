@@ -11,6 +11,7 @@ from tsurv.words import (
     Tier,
     Word,
     WordSelectionError,
+    WordText,
     chunk_boss_sentence,
     pick_word,
 )
@@ -19,7 +20,7 @@ _T1_MIN_LEN = 3
 _T1_MAX_LEN = 5
 _T2_MIN_LEN = 5
 _T2_MAX_LEN = 8
-_BOSS_MIN_LEN = 9
+_T3_MIN_LEN = 9
 _HISTORY_WINDOW = 30
 _SAMPLES = 50
 
@@ -45,8 +46,8 @@ def _pick_many(tier: Tier, count: int = _SAMPLES) -> list[str]:
 
 
 def test_tier_members_are_pinned() -> None:
-    """The Tier enum has exactly the four tiers the engine handles."""
-    assert set(Tier) == {Tier.T1, Tier.T2, Tier.CODE, Tier.BOSS}
+    """The Tier enum has exactly the five tiers the engine handles."""
+    assert set(Tier) == {Tier.T1, Tier.T2, Tier.T3, Tier.CODE, Tier.BOSS}
 
 
 def test_t1_words_use_short_band() -> None:
@@ -61,10 +62,16 @@ def test_t2_words_use_mid_band() -> None:
         assert _T2_MIN_LEN <= len(text) <= _T2_MAX_LEN
 
 
-def test_boss_words_use_long_band() -> None:
-    """BOSS picks are 9+ characters from the 10k list."""
-    for text in _pick_many(Tier.BOSS):
-        assert len(text) >= _BOSS_MIN_LEN
+def test_t3_words_use_long_band() -> None:
+    """T3 picks are 9+ characters from the 10k list."""
+    for text in _pick_many(Tier.T3):
+        assert len(text) >= _T3_MIN_LEN
+
+
+def test_boss_tier_has_no_pickable_pool() -> None:
+    """BOSS words come only from chunk_boss_sentence over authored pools."""
+    with pytest.raises(WordSelectionError, match="boss words come only"):
+        _ = pick_word(Tier.BOSS, (), ())
 
 
 def test_code_words_come_from_code_lists() -> None:
@@ -105,7 +112,7 @@ def test_max_two_shared_initials() -> None:
 def test_swear_list_word_never_returned() -> None:
     """Known profanities present in the raw lists are never picked."""
     seen: set[str] = set()
-    for tier in (Tier.T1, Tier.T2, Tier.BOSS):
+    for tier in (Tier.T1, Tier.T2, Tier.T3):
         seen.update(_pick_many(tier, _SAMPLES))
     assert "damn" not in seen
     assert "hell" not in seen
@@ -152,3 +159,43 @@ def test_chunk_empty_sentence_returns_empty() -> None:
     """Blank input chunks to nothing rather than raising."""
     assert chunk_boss_sentence("") == []
     assert chunk_boss_sentence("   ") == []
+
+
+def test_word_older_than_thirty_is_eligible_again() -> None:
+    """A word that fell out of the 30-entry window can be picked again."""
+    pool = TIER_WORDS[Tier.T1]
+    target = pool[0]
+    rest = [word for word in pool if word != target]
+    history = [target, *rest[:_HISTORY_WINDOW]]
+    assert pick_word(Tier.T1, history, tuple(rest)).text == target
+
+
+def test_initials_filter_relaxes_when_it_empties_pool() -> None:
+    """When every remaining word shares a blocked initial, one is picked."""
+    pool = TIER_WORDS[Tier.T1]
+    on_screen = ("snake", "storm", *[word for word in pool if not word.startswith("s")])
+    for _ in range(_SAMPLES):
+        assert pick_word(Tier.T1, (), on_screen).text.startswith("s")
+
+
+def test_exhausted_code_pool_raises() -> None:
+    """Covering the whole CODE pool with on-screen words raises."""
+    with pytest.raises(WordSelectionError, match="no CODE word"):
+        _ = pick_word(Tier.CODE, (), TIER_WORDS[Tier.CODE])
+
+
+def test_code_pool_is_deduplicated() -> None:
+    """Tokens shared by both code files (e.g. assert) appear exactly once."""
+    pool = TIER_WORDS[Tier.CODE]
+    assert len(pool) == len(set(pool))
+    assert sum(1 for word in pool if word == WordText("assert")) == 1
+
+
+def test_chunk_non_ascii_raises() -> None:
+    """Non-typeable chunks (em-dash, curly quotes, accents) are rejected."""
+    with pytest.raises(WordSelectionError, match="typeable ASCII"):
+        _ = chunk_boss_sentence("wait \u2014 what")
+    with pytest.raises(WordSelectionError, match="typeable ASCII"):
+        _ = chunk_boss_sentence("\u201chello\u201d")
+    with pytest.raises(WordSelectionError, match="typeable ASCII"):
+        _ = chunk_boss_sentence("caf\u00e9")
