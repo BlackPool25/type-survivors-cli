@@ -17,7 +17,7 @@ from tsurv.combat import (
     apply_keystroke,
 )
 from tsurv.items import ItemKind, TriggerResult, trigger
-from tsurv.words import Corruption, Word
+from tsurv.words import Corruption, Tier, Word
 
 Score = NewType("Score", int)
 """Run score: word-length points accumulated per kill."""
@@ -35,6 +35,21 @@ class EnemyKind(StrEnum):
 
 LEAK_DAMAGE: Final = 10.0
 """HP lost when one enemy reaches the Sanctuary Core."""
+
+MERCY_STUNS: Final = 3
+"""Typo-stuns inside the rolling window that arm the mercy valve."""
+
+MERCY_WINDOW_S: Final = 20.0
+"""Rolling seconds over which typo-stuns count toward mercy."""
+
+MERCY_RECOVERY_KEYSTROKES: Final = 10
+"""Resolved keystrokes per recovery window while mercy is active."""
+
+MERCY_RECOVERY_ACC: Final = 0.8
+"""Recovery-window accuracy that switches the valve back off."""
+
+MERCY_SPAWN_SLOWDOWN: Final = 1.5
+"""Spawn-gap multiplier while mercy is active (slower spawns)."""
 
 KILL_POINTS_PER_CHAR: Final = 10
 """Score per word character on a kill."""
@@ -86,6 +101,72 @@ class ArenaEnemy:
 
 
 @dataclass(frozen=True, slots=True)
+class MercyState:
+    """Mercy valve: rolling typo-stun timestamps plus recovery progress.
+
+    Three stuns inside 20s arm the valve (slower spawns, easier tiers)
+    until a 10-keystroke window clears 80% accuracy. Never arms during
+    boss waves — bosses stay hard.
+    """
+
+    stuns: tuple[float, ...] = ()
+    active: bool = False
+    hits: int = 0
+    total: int = 0
+
+    def __post_init__(self) -> None:
+        """Reject negative recovery tallies and hits above total."""
+        if self.hits < 0 or self.total < 0 or self.hits > self.total:
+            msg = f"invalid mercy window: {self.total} keys, {self.hits} hits"
+            raise ValueError(msg)
+
+
+def mercy_note_stun(state: MercyState, now: float) -> MercyState:
+    """Record a fresh typo-stun; three inside the window arm the valve."""
+    recent = tuple(
+        moment for moment in (*state.stuns, now) if now - moment <= MERCY_WINDOW_S
+    )
+    if state.active:
+        return replace(state, stuns=recent)
+    if len(recent) >= MERCY_STUNS:
+        return MercyState(stuns=recent, active=True)
+    return replace(state, stuns=recent)
+
+
+def mercy_note_keystroke(state: MercyState, *, correct: bool) -> MercyState:
+    """Count one resolved keystroke; a clean window switches the valve off."""
+    if not state.active:
+        return state
+    hits = state.hits + (1 if correct else 0)
+    total = state.total + 1
+    if total < MERCY_RECOVERY_KEYSTROKES:
+        return replace(state, hits=hits, total=total)
+    if hits / total >= MERCY_RECOVERY_ACC:
+        return MercyState()
+    return replace(state, hits=0, total=0)
+
+
+def mercy_tier(tier: Tier, mercy: MercyState) -> Tier:
+    """Drop one difficulty tier while mercy is active (boss tiers untouched)."""
+    if not mercy.active:
+        return tier
+    match tier:
+        case Tier.T3:
+            return Tier.T2
+        case Tier.T2:
+            return Tier.T1
+        case Tier.T1 | Tier.CODE | Tier.BOSS:
+            return tier
+        case _:
+            assert_never(tier)
+
+
+def mercy_spawn_factor(mercy: MercyState) -> float:
+    """Spawn-gap multiplier: slower spawns while mercy is active."""
+    return MERCY_SPAWN_SLOWDOWN if mercy.active else 1.0
+
+
+@dataclass(frozen=True, slots=True)
 class ArenaState:
     """Full endless-loop state: foes, score, vitals, locks, effect windows."""
 
@@ -104,6 +185,7 @@ class ArenaState:
     typed: int = 0
     next_id: int = 0
     boss_wave: bool = False
+    mercy: MercyState = MercyState()
 
 
 def initial_arena(
@@ -165,13 +247,15 @@ def handle_keystroke(
     )
     match outcome:
         case Advanced(target=target, typed=typed):
-            return replace(state, current=target, typed=typed), outcome
+            mercy = mercy_note_keystroke(state.mercy, correct=True)
+            return replace(state, current=target, typed=typed, mercy=mercy), outcome
         case Kill(target=target, streak=streak, shield_until=shield):
             foe = next(item for item in state.enemies if item.id == target)
             gained = Score(
                 state.score + len(str(foe.word.text)) * KILL_POINTS_PER_CHAR,
             )
             merged = max(state.shield_until, shield)
+            mercy = mercy_note_keystroke(state.mercy, correct=True)
             if foe.hp_words > 1:
                 burned = tuple(
                     replace(item, hp_words=item.hp_words - 1)
@@ -187,6 +271,7 @@ def handle_keystroke(
                     shield_until=merged,
                     current=target,
                     typed=0,
+                    mercy=mercy,
                 ), outcome
             rest = tuple(item for item in state.enemies if item.id != target)
             live = (
@@ -203,9 +288,14 @@ def handle_keystroke(
                 shield_until=merged,
                 current=live,
                 typed=0 if live is None else state.typed,
+                mercy=mercy,
             ), outcome
         case TypoStun(stun_until=until):
-            return replace(state, stunned_until=until, streak=0), outcome
+            fresh = until > state.stunned_until
+            mercy = state.mercy
+            if fresh and not state.boss_wave:
+                mercy = mercy_note_stun(state.mercy, now)
+            return replace(state, stunned_until=until, streak=0, mercy=mercy), outcome
         case NoTarget():
             return state, outcome
 

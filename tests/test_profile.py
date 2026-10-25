@@ -105,7 +105,15 @@ def test_record_keystroke_leaves_original_alone() -> None:
     before = Profile()
     after = record_keystroke(before, "q", correct=True, dt=0.05)
     assert before.per_key == {}
-    assert after.per_key["q"] == KeyStat(presses=1, correct=1, total_time=0.05)
+    assert after.per_key["q"] == KeyStat(
+        presses=1,
+        correct=1,
+        total_time=0.05,
+        ema_ms=50.0,
+        best_ms=50.0,
+        review_attempts=1,
+        review_correct=1,
+    )
 
 
 def test_record_keystroke_rejects_bad_input() -> None:

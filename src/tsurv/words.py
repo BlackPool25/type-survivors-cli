@@ -20,6 +20,9 @@ _WORDS_DIR: Final = Path(__file__).resolve().parent.parent.parent / "words"
 WEAK_KEY_BOOST: Final = 3
 """Reweight factor for weak-key words: listed this often, never exclusively."""
 
+REVIEW_BOOST: Final = 2
+"""Extra multiplier for overdue-review weak keys (stacks with WEAK_KEY_BOOST)."""
+
 _T1_MIN_LEN: Final = 3
 _T1_MAX_LEN: Final = 5
 _T2_MIN_LEN: Final = 5
@@ -204,21 +207,42 @@ def reweight_for_weak_keys(
     candidate stays eligible exactly once, so practice targets weak keys
     while normal spawns can still surface anything.
     """
+    return reweight_for_review(candidates, weak_keys)
+
+
+def reweight_for_review(
+    candidates: Sequence[WordText],
+    weak_keys: Sequence[str],
+    overdue: Sequence[str] = (),
+) -> tuple[WordText, ...]:
+    """Bias toward weak keys, overdue-review keys most, never excluding anyone.
+
+    Weak-key words appear WEAK_KEY_BOOST times as often; the overdue subset
+    appears WEAK_KEY_BOOST * REVIEW_BOOST times. Every other candidate stays
+    eligible exactly once.
+    """
     if not weak_keys:
         return tuple(candidates)
     weak = tuple(word for word in candidates if weak_hits(str(word), weak_keys))
     if not weak or len(weak) == len(candidates):
         return tuple(candidates)
     rest = tuple(word for word in candidates if not weak_hits(str(word), weak_keys))
-    return (*weak * WEAK_KEY_BOOST, *rest)
+    if not overdue:
+        return (*weak * WEAK_KEY_BOOST, *rest)
+    hot = tuple(word for word in weak if weak_hits(str(word), overdue))
+    if not hot or len(hot) == len(weak):
+        return (*weak * WEAK_KEY_BOOST, *rest)
+    cold = tuple(word for word in weak if not weak_hits(str(word), overdue))
+    return (*hot * (WEAK_KEY_BOOST * REVIEW_BOOST), *cold * WEAK_KEY_BOOST, *rest)
 
 
-def pick_word(
+def pick_word(  # noqa: PLR0913 - spawn needs tier/history/screen/weak/overdue/rng
     tier: Tier,
     history: Sequence[str],
     on_screen: Sequence[str],
     *,
     weak_keys: Sequence[str] = (),
+    overdue_keys: Sequence[str] = (),
     rng: random.Random | None = None,
 ) -> Word:
     """Pick a random word for a tier honoring spawn constraints.
@@ -242,7 +266,7 @@ def pick_word(
     if not candidates:
         msg = f"no {tier.value} word satisfies spawn constraints"
         raise WordSelectionError(msg)
-    weighted = reweight_for_weak_keys(tuple(candidates), weak_keys)
+    weighted = reweight_for_review(tuple(candidates), weak_keys, overdue_keys)
     if rng is not None:
         return Word(text=rng.choice(weighted), tier=tier)
     return Word(text=secrets.choice(weighted), tier=tier)

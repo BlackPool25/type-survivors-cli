@@ -26,6 +26,8 @@ from tsurv.arena import (
     corrupted_display,
     handle_keystroke,
     initial_arena,
+    mercy_spawn_factor,
+    mercy_tier,
     roll_drop,
     seconds_to_impact,
     set_boss_wave,
@@ -45,7 +47,7 @@ from tsurv.juice import (
     trigger_bar_break,
     trigger_kill,
 )
-from tsurv.profile import Profile, RunSummary
+from tsurv.profile import Profile, RunSummary, weak_keys_for_spawn
 from tsurv.report import render_report
 from tsurv.screens import (
     SHOP_CATALOG,
@@ -408,6 +410,7 @@ class ArenaScreen(Screen[None]):
         if self._spawn_enabled:
             self._clock += dt
             gap = spawn_interval(REF_WPM, rolling_wpm(self._kill_times, now))
+            gap *= mercy_spawn_factor(self._arena.mercy)
             if self._clock >= gap and len(self._arena.enemies) < MAX_FOES:
                 self._clock = 0.0
                 self._spawn_foe()
@@ -437,8 +440,22 @@ class ArenaScreen(Screen[None]):
                 distance=8.0,
             )
             return
-        tier = Tier.T1 if self._arena.wave <= 1 else Tier.T2
-        word = pick_word(tier, (), shown, weak_keys=self._weak_keys)
+        tier = mercy_tier(
+            Tier.T1 if self._arena.wave <= 1 else Tier.T2,
+            self._arena.mercy,
+        )
+        overdue = (
+            weak_keys_for_spawn(self._app_ref.profile, time.monotonic())
+            if self._app_ref is not None
+            else ()
+        )
+        word = pick_word(
+            tier,
+            (),
+            shown,
+            weak_keys=self._weak_keys,
+            overdue_keys=overdue,
+        )
         kind = EnemyKind.GRUNT if len(shown) % 3 else EnemyKind.MITE
         self._arena = spawn_enemy(self._arena, word, kind=kind)
 

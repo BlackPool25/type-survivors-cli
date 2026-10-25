@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, ClassVar, Final, Self, assert_never
 
@@ -13,6 +14,27 @@ if TYPE_CHECKING:
 
 PROFILE_FILENAME: Final = "profile.json"
 """Save file name inside the player data dir."""
+
+CONFIDENCE_ALPHA: Final = 0.1
+"""EMA weight per correct keystroke (keybr-style smoothing)."""
+
+LATENCY_MIN_MS: Final = 40.0
+"""Fastest believable inter-key latency; below this is a rejected outlier."""
+
+LATENCY_MAX_MS: Final = 12000.0
+"""Slowest believable inter-key latency; above this is a rejected outlier."""
+
+REVIEW_INTERVALS_S: Final = (0.0, 3600.0, 86400.0, 259200.0, 604800.0, 1209600.0)
+"""Weak-key review ladder: same-session, 1h, 1d, 3d, 7d, 14d."""
+
+REVIEW_PROMOTE_ACC: Final = 0.98
+"""Accuracy over a full window that promotes a key one ladder step."""
+
+REVIEW_MIN_ATTEMPTS: Final = 10
+"""Attempts per review window before promote/demote is evaluated."""
+
+REVIEW_DEMOTE_ACC: Final = 0.85
+"""Accuracy below this over a full window demotes a key one ladder step."""
 
 
 class ProfileError(ValueError):
@@ -40,11 +62,23 @@ class Settings:
 
 @dataclass(frozen=True, slots=True)
 class KeyStat:
-    """Per-key coaching stats: presses, hits, and total press time in seconds."""
+    """Per-key coaching stats: presses, hits, press time, confidence, review.
+
+    ema_ms/best_ms carry the keybr-style confidence tracker (Task 8): EMA of
+    in-range correct-key latencies plus the running min of the smoothed value.
+    review_* / last_review carry the cross-session spaced-repetition schedule.
+    """
 
     presses: int = 0
     correct: int = 0
     total_time: float = 0.0
+    ema_ms: float | None = None
+    best_ms: float | None = None
+    misses: int = 0
+    review_step: int = 0
+    review_attempts: int = 0
+    review_correct: int = 0
+    last_review: float | None = None
 
     def __post_init__(self) -> None:
         """Reject negative counts, hits above presses, and negative time."""
@@ -53,6 +87,31 @@ class KeyStat:
             raise ProfileError(msg)
         if self.total_time < 0.0:
             msg = f"invalid key time: {self.total_time}"
+            raise ProfileError(msg)
+        if self.ema_ms is not None and self.ema_ms < 0.0:
+            msg = f"invalid key ema: {self.ema_ms}"
+            raise ProfileError(msg)
+        if self.best_ms is not None and self.best_ms < 0.0:
+            msg = f"invalid key best: {self.best_ms}"
+            raise ProfileError(msg)
+        if self.misses < 0:
+            msg = f"invalid key misses: {self.misses}"
+            raise ProfileError(msg)
+        if not 0 <= self.review_step < len(REVIEW_INTERVALS_S):
+            msg = f"invalid review step: {self.review_step}"
+            raise ProfileError(msg)
+        if (
+            self.review_attempts < 0
+            or self.review_correct < 0
+            or self.review_correct > self.review_attempts
+        ):
+            msg = (
+                "invalid review window: "
+                f"{self.review_attempts} attempts, {self.review_correct} hits"
+            )
+            raise ProfileError(msg)
+        if self.last_review is not None and not math.isfinite(self.last_review):
+            msg = f"invalid last review: {self.last_review}"
             raise ProfileError(msg)
 
     @property
@@ -135,11 +194,86 @@ def save_profile(profile_dir: Path, profile: Profile) -> None:
         raise ProfileError(msg) from exc
 
 
+def confidence(stat: KeyStat, target_ms: float) -> float:
+    """Keybr-style confidence: target/smoothed, capped at 1.0, 0.0 with no data."""
+    if target_ms <= 0.0:
+        msg = f"confidence target must be > 0.0, got {target_ms}"
+        raise ProfileError(msg)
+    if stat.ema_ms is None:
+        return 0.0
+    return min(1.0, target_ms / stat.ema_ms) if stat.ema_ms > 0.0 else 1.0
+
+
+def _smooth_timing(stat: KeyStat, dt_ms: float, *, correct: bool) -> KeyStat:
+    """Fold one latency into the EMA; typos bump misses, outliers are dropped."""
+    if not correct:
+        return replace(stat, misses=stat.misses + 1)
+    if not LATENCY_MIN_MS <= dt_ms <= LATENCY_MAX_MS:
+        return stat
+    if stat.ema_ms is None:
+        ema = dt_ms
+    else:
+        ema = stat.ema_ms + CONFIDENCE_ALPHA * (dt_ms - stat.ema_ms)
+    best = ema if stat.best_ms is None else min(stat.best_ms, ema)
+    return replace(stat, ema_ms=ema, best_ms=best)
+
+
+def review_interval_s(step: int) -> float:
+    """Seconds until the next review for a ladder step (clamped to the ladder)."""
+    return REVIEW_INTERVALS_S[min(max(step, 0), len(REVIEW_INTERVALS_S) - 1)]
+
+
+def _note_review_attempt(stat: KeyStat, *, correct: bool, now: float | None) -> KeyStat:
+    """Count one review attempt; full windows promote/demote and reset."""
+    attempts = stat.review_attempts + 1
+    hits = stat.review_correct + (1 if correct else 0)
+    if attempts < REVIEW_MIN_ATTEMPTS:
+        return replace(stat, review_attempts=attempts, review_correct=hits)
+    accuracy = hits / attempts
+    step = stat.review_step
+    if accuracy >= REVIEW_PROMOTE_ACC:
+        step = min(step + 1, len(REVIEW_INTERVALS_S) - 1)
+    elif accuracy < REVIEW_DEMOTE_ACC:
+        step = max(step - 1, 0)
+    return replace(
+        stat,
+        review_step=step,
+        review_attempts=0,
+        review_correct=0,
+        last_review=now,
+    )
+
+
+def review_due(stat: KeyStat, now: float) -> bool:
+    """Report whether a key's review interval has elapsed (never-seen is due)."""
+    if stat.last_review is None:
+        return True
+    return now - stat.last_review >= review_interval_s(stat.review_step)
+
+
+def overdue_by(stat: KeyStat, now: float) -> float:
+    """Seconds past a key's review interval (never-seen counts from epoch)."""
+    seen = stat.last_review if stat.last_review is not None else 0.0
+    return now - seen - review_interval_s(stat.review_step)
+
+
+def weak_keys_for_spawn(profile: Profile, now: float) -> tuple[str, ...]:
+    """Due weak keys, most overdue first, for the spawn-weighting hook."""
+    due = [
+        (overdue_by(stat, now), key)
+        for key, stat in profile.per_key.items()
+        if stat.presses > 0 and review_due(stat, now)
+    ]
+    return tuple(key for _, key in sorted(due, reverse=True))
+
+
 def record_keystroke(
     profile: Profile,
     key: str,
     correct: bool,  # noqa: FBT001 - brief pins (profile, key, correct, dt)
     dt: float,
+    *,
+    now: float | None = None,
 ) -> Profile:
     """Fold one keystroke into per-key stats, returning a new profile."""
     if len(key) != 1:
@@ -149,9 +283,12 @@ def record_keystroke(
         msg = f"keystroke dt must be >= 0.0, got {dt}"
         raise ProfileError(msg)
     stat = profile.per_key.get(key, KeyStat())
-    updated = KeyStat(
+    counted = replace(
+        stat,
         presses=stat.presses + 1,
         correct=stat.correct + (1 if correct else 0),
         total_time=stat.total_time + dt,
     )
+    timed = _smooth_timing(counted, dt * 1000.0, correct=correct)
+    updated = _note_review_attempt(timed, correct=correct, now=now)
     return profile.model_copy(update={"per_key": {**profile.per_key, key: updated}})
