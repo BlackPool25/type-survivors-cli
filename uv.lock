@@ -480,6 +480,19 @@ wheels = [
 ]
 
 [[package]]
+name = "rich-pixels"
+version = "3.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pillow" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/31/71/6d5cd4b8d67cd49366eda19aaf37f20094ce562223a91166109202590237/rich_pixels-3.0.1.tar.gz", hash = "sha256:4a81977d45437ce5009cdcaf70af80256c3bdfab870e87ab802c577ba4133235", size = 24631, upload-time = "2024-03-30T09:37:52.834Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/08/72/7264494bc0944db1166b73c88f19d9ddfc584dbbc77c210cd0f52f59c511/rich_pixels-3.0.1-py3-none-any.whl", hash = "sha256:e82c5aa0d00885609675494f16e1ef814c68fa795634f1d6917cae9159b755e1", size = 6004, upload-time = "2024-03-30T09:37:51.169Z" },
+]
+
+[[package]]
 name = "ruff"
 version = "0.17.2"
 source = { registry = "https://pypi.org/simple" }
@@ -502,6 +515,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/2c/d4/c3b74e1b4808438ea7f14bb914478025e2d51261f60774a54a0fa222ec46/ruff-0.17.2-py3-none-win32.whl", hash = "sha256:6bce7d1f5165701ae18f5df85c65afe78cddfa6c5fb4b9bdb0014d60388f3edd", size = 9870537, upload-time = "2026-10-22T18:37:52.486Z" },
     { url = "https://files.pythonhosted.org/packages/1c/9a/c7da96c2c96d20704cf9027f7a5121da272a8c05f1d1531ba949e3b3df04/ruff-0.17.2-py3-none-win_amd64.whl", hash = "sha256:1b59d447f197bef9ef48a22ba1a6016137753c6099e9bac9c36eb566e422424c", size = 10282826, upload-time = "2026-10-22T18:37:55.2Z" },
     { url = "https://files.pythonhosted.org/packages/81/60/a3604c79cb02777b6cb84da894104021986f06c4bc41375102cc95049a32/ruff-0.17.2-py3-none-win_arm64.whl", hash = "sha256:195ad918027f817c119310ca89a42d347887dfc28934aaa869325e9c5dc9d962", size = 9827036, upload-time = "2026-10-22T18:37:58.031Z" },
+]
+
+[[package]]
+name = "terminaltexteffects"
+version = "0.15.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/3c/df/4fa04990d75cc27215159bf9edec7d56546fd72e1927c5753d0de0414e7b/terminaltexteffects-0.15.0.tar.gz", hash = "sha256:f4b31c86bfa943d5bf3b2c5ecbfaea0de65ed4a951028c40f8e4cb54efd06439", size = 261994, upload-time = "2026-05-10T01:46:27.179Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ba/e8/89035cd56a3ef4fe1c2dbf790e1a2c78d4e922d3dbfc048e314e40c22b1a/terminaltexteffects-0.15.0-py3-none-any.whl", hash = "sha256:5503250dacae9a3c17e22b0010b2f5fa10332124019f485d517e0c9ebc51aa47", size = 224704, upload-time = "2026-05-10T01:46:28.48Z" },
 ]
 
 [[package]]
@@ -528,6 +550,8 @@ source = { editable = "." }
 dependencies = [
     { name = "par-textual-image" },
     { name = "pydantic" },
+    { name = "rich-pixels" },
+    { name = "terminaltexteffects" },
     { name = "textual" },
 ]
 
@@ -544,6 +568,8 @@ dev = [
 requires-dist = [
     { name = "par-textual-image", specifier = ">=0.1.0" },
     { name = "pydantic", specifier = ">=2.14.1" },
+    { name = "rich-pixels", specifier = ">=3.0.1" },
+    { name = "terminaltexteffects", specifier = ">=0.15.0" },
     { name = "textual", specifier = "==8.2.8" },
 ]
 

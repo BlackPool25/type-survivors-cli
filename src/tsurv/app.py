@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import os
 import random
@@ -51,6 +52,7 @@ from tsurv.juice import (
     trigger_bar_break,
     trigger_kill,
 )
+from tsurv.logo import TAGLINE, decrypt_frames, hub_footer, render_logo
 from tsurv.metrics import (
     Consistency,
     Tally,
@@ -1261,6 +1263,20 @@ class ReportScreen(Screen[None]):
             self._app_ref.return_to_arena()
 
 
+_LOGO_CELLS_W: Final = 48
+"""Baked logo width on the hub; 10 half-cell rows at the 96x40 source art."""
+
+_HUB_DECRYPT_STEP_S: Final = 1 / 30
+"""Subtitle decrypt pacing: 30fps playback of the sampled TTE frames."""
+
+
+def _hub_logo_text() -> Text | str:
+    """Baked logo cells: styled text in color, plain blocks in mono."""
+    mono = not colors_enabled()
+    baked = render_logo(_LOGO_CELLS_W, mono=mono)
+    return baked if mono else Text.from_ansi(baked)
+
+
 class HubScreen(Screen[None]):
     """Blood Neon Void menu: banner, selectable list, wallet, key hints."""
 
@@ -1270,6 +1286,7 @@ class HubScreen(Screen[None]):
         "text-align: center; }\n"
         "#hub-center { height: 1fr; }\n"
         "#hub-column { width: 1fr; height: auto; align: center middle; }\n"
+        "#hub-logo { width: 1fr; height: auto; text-align: center; }\n"
         "#hub-banner { width: 1fr; height: 5; color: #FF2A2A; "
         "text-style: bold; text-align: center; content-align: center middle; "
         "border: solid #952CF5; }\n"
@@ -1281,6 +1298,7 @@ class HubScreen(Screen[None]):
         "#hub-panel { width: 80%; height: 11; border: solid #952CF5; }\n"
         "#hub-list { width: 1fr; height: 6; }\n"
         "#hub-message { width: 1fr; height: 1; color: #FFD23F; }\n"
+        "#hub-stats { width: 1fr; height: 1; color: #FFD23F; text-align: center; }\n"
     )
 
     def __init__(self, app: TypeSurvivorsApp) -> None:
@@ -1308,8 +1326,9 @@ class HubScreen(Screen[None]):
                 id="hub-column",
             ),
         ):
+            yield Label(_hub_logo_text(), id="hub-logo")
             yield Label(hub_banner_text(mono=not colors_enabled()), id="hub-banner")
-            yield Label("type fast or be eaten by the void", id="subtitle")
+            yield Label(TAGLINE, id="subtitle")
             with Vertical(id="hub-header"):
                 yield Label(f"gold {self._app_ref.profile.gold}", id="gold")
                 yield Label(
@@ -1322,16 +1341,39 @@ class HubScreen(Screen[None]):
             with Vertical(id="hub-panel"):
                 yield Label("", id="hub-list")
                 yield Label("", id="hub-message")
+            yield Label(hub_footer(self._app_ref.profile), id="hub-stats")
 
     def on_mount(self) -> None:
-        """Paint the selectable list once the widgets exist."""
+        """Paint the selectable list, then decrypt the tagline once per boot."""
         self._refresh_hub()
+        if self._app_ref.claim_hub_intro():
+            self._play_decrypt()
+
+    def _play_decrypt(self) -> None:
+        """Glitch the subtitle in via TTE; the task yields so keys stay live."""
+
+        async def _run() -> None:
+            frames = await asyncio.to_thread(decrypt_frames, TAGLINE)
+            mono = not colors_enabled()
+            for frame in frames:
+                if not self.is_mounted:
+                    return
+                styled = Text.from_ansi(frame).plain if mono else Text.from_ansi(frame)
+                for widget in self.query("#subtitle"):
+                    if isinstance(widget, Label):
+                        widget.update(styled)
+                await asyncio.sleep(_HUB_DECRYPT_STEP_S)
+
+        _ = self.run_worker(_run(), exclusive=True)
 
     def _refresh_hub(self) -> None:
-        """Repaint the highlighted menu row."""
+        """Repaint the highlighted menu row and the stats footer."""
         self.query_one("#hub-list", Label).update(
             hub_list_text(HUB_ENTRIES, self._selected, mono=not colors_enabled()),
         )
+        for stats in self.query("#hub-stats"):
+            if isinstance(stats, Label):
+                stats.update(hub_footer(self._app_ref.profile))
 
     def _press(self, key: str) -> None:
         """Route one menu hotkey to its app navigation method."""
@@ -1529,6 +1571,14 @@ class TypeSurvivorsApp(App[None]):
         self._profile_dir: Path | None = profile_dir
         self._start_at_hub: bool = start_at_hub
         self._resume: bool = resume
+        self._hub_intro_played: bool = False
+
+    def claim_hub_intro(self) -> bool:
+        """Consume the one-shot hub decrypt intro (True on the first call)."""
+        if self._hub_intro_played:
+            return False
+        self._hub_intro_played = True
+        return True
 
     @property
     def profile(self) -> Profile:
