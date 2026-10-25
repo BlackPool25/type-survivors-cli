@@ -36,7 +36,7 @@ from tsurv.arena import (
     set_boss_wave,
     spawn_enemy,
 )
-from tsurv.combat import EnemyId, Kill, TypoStun, rolling_wpm, spawn_interval
+from tsurv.combat import EnemyId, Kill, rolling_wpm, spawn_interval
 from tsurv.grammar import GrammarError, generate_boss_sentence
 from tsurv.juice import (
     JuiceState,
@@ -49,6 +49,12 @@ from tsurv.juice import (
     time_scale,
     trigger_bar_break,
     trigger_kill,
+)
+from tsurv.metrics import (
+    Tally,
+    leak_missed,
+    tally_accuracy,
+    tally_of,
 )
 from tsurv.profile import Profile, RunSummary, weak_keys_for_spawn
 from tsurv.report import render_report
@@ -215,6 +221,19 @@ def _default_words() -> tuple[str, ...]:
     return tuple(shown)
 
 
+def _leaked_untyped(before: ArenaState, leaked: tuple[str, ...]) -> int:
+    """Count chars left untyped on leaked foes (spawn deals unique words)."""
+    pending = list(leaked)
+    total = 0
+    for foe in before.enemies:
+        name = str(foe.word.text)
+        if name in pending:
+            pending.remove(name)
+            typed = before.typed if foe.id == before.current else 0
+            total += leak_missed(name, typed)
+    return total
+
+
 class ArenaScreen(Screen[None]):
     """The playable endless loop; death and pause stay on this screen."""
 
@@ -327,8 +346,7 @@ class ArenaScreen(Screen[None]):
         self._clock: float = 0.0
         self._wave_clock: float = 0.0
         self._kill_times: list[float] = []
-        self._presses: int = 0
-        self._hits: int = 0
+        self._tally: Tally = Tally()
         self._killer: str | None = None
         self._boss_bars: list[ProgressBar] = [
             ProgressBar(total=1, show_bar=True, show_percentage=False)
@@ -402,14 +420,19 @@ class ArenaScreen(Screen[None]):
         return self.query_one("#stun", Label).display
 
     @property
+    def tally(self) -> Tally:
+        """Live keystroke taxonomy (feeds accuracy, HUD, and the recap)."""
+        return self._tally
+
+    @property
     def hits(self) -> int:
         """Correct keypresses this run (feeds the recap accuracy)."""
-        return self._hits
+        return self._tally.correct
 
     @property
     def presses(self) -> int:
-        """Total keypresses this run (feeds the recap accuracy)."""
-        return self._presses
+        """Total keypresses this run (missed leak chars are not presses)."""
+        return self._tally.correct + self._tally.incorrect + self._tally.extra
 
     @property
     def killer(self) -> str | None:
@@ -545,12 +568,14 @@ class ArenaScreen(Screen[None]):
         now = time.monotonic()
         dt *= time_scale(self._juice, now)
         self._run_clock += dt
+        before_leak = self._arena
         if self._practice:
             self._arena, leaked = practice_advance(self._arena, dt)
         else:
             self._arena, leaked = advance(self._arena, dt)
         if leaked:
             self._killer = leaked[0]
+            self._tally = self._tally.add_missed(_leaked_untyped(before_leak, leaked))
             self._refresh()
             return
         self._wave_clock += dt
@@ -634,17 +659,15 @@ class ArenaScreen(Screen[None]):
         if is_narrow(self.size.width):
             return
         now = time.monotonic()
-        self._presses += 1
         before = self._arena
+        locked = before.current is not None
         state, outcome = handle_keystroke(before, ch, now)
         self._arena = state
+        self._tally = self._tally.add(tally_of(outcome, locked))
         if isinstance(outcome, Kill):
-            self._hits += 1
             self._kill_times.append(now)
             self._resolve_drop(before, outcome.target)
             self._juice_hit(before, outcome, now)
-        elif not isinstance(outcome, TypoStun):
-            self._hits += 1
         self._refresh()
 
     def _handle_command_key(self, ch: str) -> bool:
@@ -725,7 +748,7 @@ class ArenaScreen(Screen[None]):
         compact = self.size.width < COMPACT_WIDTH
         hit = foe_hit_showing(self._juice, now)
         wpm = rolling_wpm(self._kill_times, now)
-        accuracy = self._hits / self._presses if self._presses else 1.0
+        accuracy = tally_accuracy(self._tally)
         vitals = f"HP {state.hp:.0f}  WPM {wpm:.0f}  x{state.streak}"
         if low_hp(state.hp, state.max_hp):
             vitals += " LOW"
@@ -1385,7 +1408,7 @@ class TypeSurvivorsApp(App[None]):
         """Build the death recap card for the live arena tallies."""
         arena = self._live_arena()
         state = arena.arena_state
-        accuracy = arena.hits / arena.presses if arena.presses else 1.0
+        accuracy = tally_accuracy(arena.tally)
         card = render_report(
             RunSummary(
                 accuracy=accuracy,
