@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Final
 
 from tsurv.arena import (
-    KILL_POINTS_PER_CHAR,
     LEAK_DAMAGE,
     EnemyKind,
     Score,
@@ -31,6 +30,7 @@ from tsurv.combat import (
     TypoStun,
 )
 from tsurv.items import BLOOD_VIAL_HEAL, FROST_VEIL_DURATION, ItemKind
+from tsurv.reward import KILL_POINTS_PER_CHAR
 from tsurv.words import Corruption, Tier, Word, WordText
 
 _NOW = 100.0

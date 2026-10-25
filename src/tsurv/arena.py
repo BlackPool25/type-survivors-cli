@@ -17,6 +17,7 @@ from tsurv.combat import (
     apply_keystroke,
 )
 from tsurv.items import ItemKind, TriggerResult, trigger
+from tsurv.reward import score_kill, streak_multiplier
 from tsurv.words import Corruption, Tier, Word
 
 Score = NewType("Score", int)
@@ -50,9 +51,6 @@ MERCY_RECOVERY_ACC: Final = 0.8
 
 MERCY_SPAWN_SLOWDOWN: Final = 1.5
 """Spawn-gap multiplier while mercy is active (slower spawns)."""
-
-KILL_POINTS_PER_CHAR: Final = 10
-"""Score per word character on a kill."""
 
 ELITE_DROP_RATE: Final = 0.10
 """Elite Chain Spark drop chance per kill (~10%)."""
@@ -229,12 +227,16 @@ def handle_keystroke(
     state: ArenaState,
     ch: str,
     now: float,
+    *,
+    accuracy: float = 1.0,
+    consistency: float | None = None,
 ) -> tuple[ArenaState, Keystroke]:
     """Resolve one keypress: advance/kill via combat, score, streak, shields.
 
     Boss bars burn one hp_word per completed word (the foe stays locked
     until its last bar); streak-x8 kills produce shield_until, merged
     with max() so a fresh shield never clobbers a longer live one.
+    Kills bank the skill-gated payout (bands x ladder x consistency gate).
     """
     foes = tuple(foe.to_combat() for foe in state.enemies)
     outcome = apply_keystroke(
@@ -253,7 +255,13 @@ def handle_keystroke(
         case Kill(target=target, streak=streak, shield_until=shield):
             foe = next(item for item in state.enemies if item.id == target)
             gained = Score(
-                state.score + len(str(foe.word.text)) * KILL_POINTS_PER_CHAR,
+                state.score
+                + score_kill(
+                    len(str(foe.word.text)),
+                    accuracy,
+                    streak_multiplier(streak),
+                    consistency,
+                ),
             )
             merged = max(state.shield_until, shield)
             mercy = mercy_note_keystroke(state.mercy, correct=True)
@@ -377,6 +385,9 @@ def chain_lightning(
     state: ArenaState,
     exclude: EnemyId,
     arcs: int = 2,
+    *,
+    accuracy: float = 1.0,
+    consistency: float | None = None,
 ) -> tuple[ArenaState, int]:
     """Chain Spark arc: kill up to `arcs` nearest foes past the typed one.
 
@@ -388,9 +399,13 @@ def chain_lightning(
     )
     zapped = tuple(foe.id for foe in others[:arcs])
     rest = tuple(foe for foe in state.enemies if foe.id not in zapped)
+    mult = streak_multiplier(state.streak)
     gained = Score(
         state.score
-        + sum(len(str(foe.word.text)) * KILL_POINTS_PER_CHAR for foe in others[:arcs]),
+        + sum(
+            score_kill(len(str(foe.word.text)), accuracy, mult, consistency)
+            for foe in others[:arcs]
+        ),
     )
     live = state.current if any(foe.id == state.current for foe in rest) else None
     after = replace(

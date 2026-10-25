@@ -133,6 +133,13 @@ def trigger(
             assert_never(item)
 
 
-def nova_ready(acc_ema: float, good_seconds: float) -> bool:
-    """NOVA fires once smoothed accuracy holds 95%+ for 30 charged seconds."""
-    return acc_ema >= NOVA_MIN_ACCURACY and good_seconds >= NOVA_CHARGE_SECONDS
+def nova_ready(net_accuracy: float, good_seconds: float) -> bool:
+    """NOVA fires once net (tally) accuracy holds 95%+ for 30 charged seconds."""
+    return net_accuracy >= NOVA_MIN_ACCURACY and good_seconds >= NOVA_CHARGE_SECONDS
+
+
+def nova_charge(good_seconds: float, net_accuracy: float, dt: float) -> float:
+    """Bank sim seconds toward NOVA; sloppy time simply does not charge."""
+    if net_accuracy >= NOVA_MIN_ACCURACY:
+        return good_seconds + dt
+    return good_seconds

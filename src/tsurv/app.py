@@ -38,6 +38,7 @@ from tsurv.arena import (
 )
 from tsurv.combat import EnemyId, Kill, rolling_wpm, spawn_interval
 from tsurv.grammar import GrammarError, generate_boss_sentence
+from tsurv.items import nova_charge, nova_ready
 from tsurv.juice import (
     JuiceState,
     apply_calibration,
@@ -52,6 +53,7 @@ from tsurv.juice import (
 )
 from tsurv.metrics import (
     Tally,
+    consistency,
     leak_missed,
     tally_accuracy,
     tally_of,
@@ -162,6 +164,12 @@ WAVE_SECONDS: Final = 30.0
 
 BOSS_EVERY: Final = 5
 """Boss wave cadence (boss waves end on kill, not on the clock)."""
+
+_SAMPLE_WINDOW_S: Final = 60.0
+"""Trailing press history feeding the consistency gate (idle never counts)."""
+
+_WPM_PER_PRESS_SECOND: Final = 12.0
+"""Raw WPM sustained by one press in a second (chars/5 per minute)."""
 
 _START_HP: Final = 100.0
 
@@ -346,6 +354,8 @@ class ArenaScreen(Screen[None]):
         self._clock: float = 0.0
         self._wave_clock: float = 0.0
         self._kill_times: list[float] = []
+        self._press_times: list[float] = []
+        self._nova_good_seconds: float = 0.0
         self._tally: Tally = Tally()
         self._killer: str | None = None
         self._boss_bars: list[ProgressBar] = [
@@ -433,6 +443,22 @@ class ArenaScreen(Screen[None]):
     def presses(self) -> int:
         """Total keypresses this run (missed leak chars are not presses)."""
         return self._tally.correct + self._tally.incorrect + self._tally.extra
+
+    def _wpm_samples(self, now: float) -> tuple[float, ...]:
+        """Per-second raw WPM over trailing active seconds (idle never counts)."""
+        buckets: dict[int, int] = {}
+        for moment in self._press_times:
+            if now - _SAMPLE_WINDOW_S < moment <= now:
+                second = int(moment)
+                buckets[second] = buckets.get(second, 0) + 1
+        return tuple(
+            count * _WPM_PER_PRESS_SECOND for _, count in sorted(buckets.items())
+        )
+
+    @property
+    def nova_armed(self) -> bool:
+        """Whether net accuracy charged NOVA through its 95% gate."""
+        return nova_ready(tally_accuracy(self._tally), self._nova_good_seconds)
 
     @property
     def killer(self) -> str | None:
@@ -568,6 +594,14 @@ class ArenaScreen(Screen[None]):
         now = time.monotonic()
         dt *= time_scale(self._juice, now)
         self._run_clock += dt
+        self._press_times = [
+            moment for moment in self._press_times if now - moment < _SAMPLE_WINDOW_S
+        ]
+        self._nova_good_seconds = nova_charge(
+            self._nova_good_seconds,
+            tally_accuracy(self._tally),
+            dt,
+        )
         before_leak = self._arena
         if self._practice:
             self._arena, leaked = practice_advance(self._arena, dt)
@@ -661,7 +695,14 @@ class ArenaScreen(Screen[None]):
         now = time.monotonic()
         before = self._arena
         locked = before.current is not None
-        state, outcome = handle_keystroke(before, ch, now)
+        self._press_times.append(now)
+        state, outcome = handle_keystroke(
+            before,
+            ch,
+            now,
+            accuracy=tally_accuracy(self._tally),
+            consistency=consistency(self._wpm_samples(now)).value,
+        )
         self._arena = state
         self._tally = self._tally.add(tally_of(outcome, locked))
         if isinstance(outcome, Kill):
@@ -737,7 +778,12 @@ class ArenaScreen(Screen[None]):
         now = time.monotonic()
         self._arena = apply_pickup(self._arena, drop, now)
         if drop.name == "CHAIN_SPARK":
-            self._arena, _ = chain_lightning(self._arena, foe.id)
+            self._arena, _ = chain_lightning(
+                self._arena,
+                foe.id,
+                accuracy=tally_accuracy(self._tally),
+                consistency=consistency(self._wpm_samples(now)).value,
+            )
 
     def _refresh(self) -> None:
         """Repaint header, sprites, foes, fx ribbon, boss bars, flags."""
