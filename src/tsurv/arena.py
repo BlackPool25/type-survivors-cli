@@ -1,0 +1,339 @@
+"""Arena state: pure endless-loop mechanics wiring words/combat/items."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from enum import StrEnum
+from typing import Final, NewType, assert_never
+
+from tsurv.combat import (
+    Advanced,
+    EnemyId,
+    EnemyState,
+    Keystroke,
+    Kill,
+    NoTarget,
+    TypoStun,
+    apply_keystroke,
+)
+from tsurv.items import ItemKind, TriggerResult, trigger
+from tsurv.words import Corruption, Word
+
+Score = NewType("Score", int)
+"""Run score: word-length points accumulated per kill."""
+
+
+class EnemyKind(StrEnum):
+    """On-screen enemy shape (identity is shape + icon, never color-only)."""
+
+    GRUNT = "GRUNT"
+    MITE = "MITE"
+    HEX = "HEX"
+    ELITE = "ELITE"
+    BOSS = "BOSS"
+
+
+LEAK_DAMAGE: Final = 10.0
+"""HP lost when one enemy reaches the Sanctuary Core."""
+
+KILL_POINTS_PER_CHAR: Final = 10
+"""Score per word character on a kill."""
+
+ELITE_DROP_RATE: Final = 0.10
+"""Elite Chain Spark drop chance per kill (~10%)."""
+
+
+def _speed_of(kind: EnemyKind) -> float:
+    """Convergence speed in distance units per second (exhaustive)."""
+    match kind:
+        case EnemyKind.GRUNT:
+            return 1.0
+        case EnemyKind.MITE:
+            return 1.6
+        case EnemyKind.HEX:
+            return 0.6
+        case EnemyKind.ELITE:
+            return 1.0
+        case _ as other:
+            if other is EnemyKind.BOSS:
+                return 0.4
+            assert_never(other)
+
+
+@dataclass(frozen=True, slots=True)
+class ArenaEnemy:
+    """One foe: its kind, word, remaining bars, and threat distance."""
+
+    id: EnemyId
+    kind: EnemyKind
+    word: Word
+    hp_words: int
+    distance: float
+
+    def to_combat(self) -> EnemyState:
+        """Project onto the combat core's enemy view."""
+        return EnemyState(
+            id=self.id,
+            word=self.word,
+            hp_words=self.hp_words,
+            distance=self.distance,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ArenaState:
+    """Full endless-loop state: foes, score, vitals, locks, effect windows."""
+
+    enemies: tuple[ArenaEnemy, ...] = ()
+    score: Score = Score(0)
+    kills: int = 0
+    streak: int = 0
+    wave: int = 1
+    hp: float = 100.0
+    max_hp: float = 100.0
+    revives_used: int = 0
+    shield_until: float = 0.0
+    frost_until: float = 0.0
+    stunned_until: float = 0.0
+    current: EnemyId | None = None
+    typed: int = 0
+    next_id: int = 0
+    boss_wave: bool = False
+
+
+def initial_arena(
+    hp: float = 100.0,
+    streak: int = 0,
+    shield_until: float = 0.0,
+    frost_until: float = 0.0,
+    *,
+    boss_wave: bool = False,
+) -> ArenaState:
+    """Build an empty arena at full health with the given streak/windows."""
+    return ArenaState(
+        hp=hp,
+        streak=streak,
+        shield_until=shield_until,
+        frost_until=frost_until,
+        boss_wave=boss_wave,
+    )
+
+
+def spawn_enemy(
+    state: ArenaState,
+    word: Word,
+    kind: EnemyKind = EnemyKind.GRUNT,
+    hp_words: int = 1,
+    distance: float = 5.0,
+) -> ArenaState:
+    """Append one foe, handing out the next stable enemy id."""
+    foe = ArenaEnemy(
+        id=EnemyId(state.next_id),
+        kind=kind,
+        word=word,
+        hp_words=hp_words,
+        distance=distance,
+    )
+    return replace(state, enemies=(*state.enemies, foe), next_id=state.next_id + 1)
+
+
+def handle_keystroke(
+    state: ArenaState,
+    ch: str,
+    now: float,
+) -> tuple[ArenaState, Keystroke]:
+    """Resolve one keypress: advance/kill via combat, score, streak, shields.
+
+    Boss bars burn one hp_word per completed word (the foe stays locked
+    until its last bar); streak-x8 kills produce shield_until, merged
+    with max() so a fresh shield never clobbers a longer live one.
+    """
+    foes = tuple(foe.to_combat() for foe in state.enemies)
+    outcome = apply_keystroke(
+        ch,
+        foes,
+        state.current,
+        state.typed,
+        state.streak,
+        now,
+        state.stunned_until,
+    )
+    match outcome:
+        case Advanced(target=target, typed=typed):
+            return replace(state, current=target, typed=typed), outcome
+        case Kill(target=target, streak=streak, shield_until=shield):
+            foe = next(item for item in state.enemies if item.id == target)
+            gained = Score(
+                state.score + len(str(foe.word.text)) * KILL_POINTS_PER_CHAR,
+            )
+            merged = max(state.shield_until, shield)
+            if foe.hp_words > 1:
+                burned = tuple(
+                    replace(item, hp_words=item.hp_words - 1)
+                    if item.id == target
+                    else item
+                    for item in state.enemies
+                )
+                return replace(
+                    state,
+                    enemies=burned,
+                    score=gained,
+                    kills=state.kills + 1,
+                    streak=streak,
+                    shield_until=merged,
+                    current=target,
+                    typed=0,
+                ), outcome
+            rest = tuple(item for item in state.enemies if item.id != target)
+            live = (
+                state.current
+                if any(item.id == state.current for item in rest)
+                else None
+            )
+            return replace(
+                state,
+                enemies=rest,
+                score=gained,
+                kills=state.kills + 1,
+                streak=streak,
+                shield_until=merged,
+                current=live,
+                typed=0 if live is None else state.typed,
+            ), outcome
+        case TypoStun(stun_until=until):
+            return replace(state, stunned_until=until, streak=0), outcome
+        case NoTarget():
+            return state, outcome
+
+
+def advance(state: ArenaState, dt: float) -> tuple[ArenaState, tuple[str, ...]]:
+    """Move foes inward; leaks cost HP, clear the lock, and name words."""
+    moved = tuple(
+        replace(foe, distance=foe.distance - _speed_of(foe.kind) * dt)
+        for foe in state.enemies
+    )
+    leaked = tuple(str(foe.word.text) for foe in moved if foe.distance <= 0.0)
+    rest = tuple(foe for foe in moved if foe.distance > 0.0)
+    hp = max(state.hp - LEAK_DAMAGE * len(leaked), 0.0)
+    live = state.current if any(foe.id == state.current for foe in rest) else None
+    after = replace(
+        state,
+        enemies=rest,
+        hp=hp,
+        current=live,
+        typed=0 if live is None else state.typed,
+    )
+    return after, leaked
+
+
+def merge_window(live: float, gained: float) -> float:
+    """Merge effect windows with max(): uses never clear live effects."""
+    return max(live, gained)
+
+
+def apply_pickup(state: ArenaState, item: ItemKind, now: float) -> ArenaState:
+    """Apply one typed item grab, max()-merging nonzero effect windows."""
+    result: TriggerResult = trigger(
+        item,
+        state.hp,
+        state.max_hp,
+        state.revives_used,
+        now,
+    )
+    return replace(
+        state,
+        hp=result.hp,
+        revives_used=result.revives_used,
+        frost_until=merge_window(state.frost_until, result.frost_until),
+        shield_until=merge_window(state.shield_until, result.shield_until),
+    )
+
+
+def roll_drop(kind: EnemyKind, roll: float) -> ItemKind | None:
+    """Drop table: Frost guaranteed per boss, Chain ~10% on elites.
+
+    NOVA never drops; it charges via nova_ready (30s at 95%+ accuracy).
+    """
+    if kind is EnemyKind.BOSS:
+        return ItemKind.FROST_VEIL
+    if kind is EnemyKind.ELITE and 0.0 <= roll < ELITE_DROP_RATE:
+        return ItemKind.CHAIN_SPARK
+    return None
+
+
+def boss_cleared(state: ArenaState) -> bool:
+    """Boss waves end on kill: true once no BOSS-kind foe remains."""
+    return state.boss_wave and not any(
+        foe.kind is EnemyKind.BOSS for foe in state.enemies
+    )
+
+
+def set_boss_wave(state: ArenaState, *, flag: bool) -> ArenaState:
+    """Mark the timed wave as a boss wave (or release it once cleared)."""
+    return replace(state, boss_wave=flag)
+
+
+def clear_lock(state: ArenaState) -> ArenaState:
+    """Drop the current target lock (Esc), keeping everything else."""
+    return replace(state, current=None, typed=0)
+
+
+def chain_lightning(
+    state: ArenaState,
+    exclude: EnemyId,
+    arcs: int = 2,
+) -> tuple[ArenaState, int]:
+    """Chain Spark arc: kill up to `arcs` nearest foes past the typed one.
+
+    shortcut: arcs a fixed count, upgrade to distance-falloff when items grow.
+    """
+    others = sorted(
+        (foe for foe in state.enemies if foe.id != exclude),
+        key=lambda foe: (foe.distance, foe.id),
+    )
+    zapped = tuple(foe.id for foe in others[:arcs])
+    rest = tuple(foe for foe in state.enemies if foe.id not in zapped)
+    gained = Score(
+        state.score
+        + sum(len(str(foe.word.text)) * KILL_POINTS_PER_CHAR for foe in others[:arcs]),
+    )
+    live = state.current if any(foe.id == state.current for foe in rest) else None
+    after = replace(
+        state,
+        enemies=rest,
+        score=gained,
+        kills=state.kills + len(zapped),
+        current=live,
+        typed=0 if live is None else state.typed,
+    )
+    return after, len(zapped)
+
+
+_GLITCH_BLOCKS: Final = "░▒▓"
+
+_ROT13_TABLE: Final = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+    "NOPQRSTUVWXYZABCDEFGHIJKLMnopqrstuvwxyzabcdefghijklm",
+)
+
+
+def corrupted_display(word: Word) -> str:
+    """Render a word through its corruption stage (display-only).
+
+    Lock/target/advance always use the raw text; this never feeds logic.
+    """
+    raw = str(word.text)
+    match word.corruption:
+        case Corruption.CLEAN:
+            return raw
+        case Corruption.REVERSED:
+            return raw[::-1]
+        case Corruption.GLITCH:
+            return "".join(
+                _GLITCH_BLOCKS[(ord(char) + index) % len(_GLITCH_BLOCKS)]
+                for index, char in enumerate(raw)
+            )
+        case _ as other:
+            if other is Corruption.ROT13:
+                return raw.translate(_ROT13_TABLE)
+            assert_never(other)

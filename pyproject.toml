@@ -5,7 +5,7 @@ description = "Type Survivors: a typing-survivors terminal game (Textual)."
 requires-python = ">=3.13"
 dependencies = [
     "pydantic>=2.14.1",
-    "textual>=8.2.8",
+    "textual==8.2.8",
 ]
 
 [build-system]
