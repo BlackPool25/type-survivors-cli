@@ -121,16 +121,16 @@ def trigger(
                 revives_used=revives_used,
                 consumed=True,
             )
-        case _ as other:
-            if other is ItemKind.CHAIN_SPARK:
-                return TriggerResult(
-                    hp=hp,
-                    frost_until=0.0,
-                    shield_until=0.0,
-                    revives_used=revives_used,
-                    consumed=True,
-                )
-            assert_never(other)
+        case ItemKind.CHAIN_SPARK:
+            return TriggerResult(
+                hp=hp,
+                frost_until=0.0,
+                shield_until=0.0,
+                revives_used=revives_used,
+                consumed=True,
+            )
+        case _:
+            assert_never(item)
 
 
 def nova_ready(acc_ema: float, good_seconds: float) -> bool:

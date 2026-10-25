@@ -54,10 +54,10 @@ def _speed_of(kind: EnemyKind) -> float:
             return 0.6
         case EnemyKind.ELITE:
             return 1.0
-        case _ as other:
-            if other is EnemyKind.BOSS:
-                return 0.4
-            assert_never(other)
+        case EnemyKind.BOSS:
+            return 0.4
+        case _:
+            assert_never(kind)
 
 
 def seconds_to_impact(kind: EnemyKind, distance: float) -> float:
@@ -260,7 +260,7 @@ def roll_drop(kind: EnemyKind, roll: float) -> ItemKind | None:
     """
     if kind is EnemyKind.BOSS:
         return ItemKind.FROST_VEIL
-    if kind is EnemyKind.ELITE and 0.0 <= roll < ELITE_DROP_RATE:
+    if kind is EnemyKind.ELITE and roll < ELITE_DROP_RATE:
         return ItemKind.CHAIN_SPARK
     return None
 
@@ -337,7 +337,7 @@ def corrupted_display(word: Word) -> str:
                 _GLITCH_BLOCKS[(ord(char) + index) % len(_GLITCH_BLOCKS)]
                 for index, char in enumerate(raw)
             )
-        case _ as other:
-            if other is Corruption.ROT13:
-                return raw.translate(_ROT13_TABLE)
-            assert_never(other)
+        case Corruption.ROT13:
+            return raw.translate(_ROT13_TABLE)
+        case _:
+            assert_never(word.corruption)

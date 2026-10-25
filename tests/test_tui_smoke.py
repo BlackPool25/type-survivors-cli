@@ -17,6 +17,8 @@ from tsurv.app import (
     ReportScreen,
     TypeSurvivorsApp,
 )
+from tsurv.arena import initial_arena, spawn_enemy
+from tsurv.words import Corruption, Tier, Word, WordText
 
 if TYPE_CHECKING:
     import pytest
@@ -106,6 +108,30 @@ def test_color_mode_uses_spans() -> None:
     mono, spans = asyncio.run(_scenario())
     assert mono is False
     assert spans > 0
+
+
+def test_mono_keeps_corruption_glyphs() -> None:
+    """Mono strips color, never the corruption signal: REVERSED still reads."""
+
+    async def _scenario() -> str:
+        app = TypeSurvivorsApp(initial_words=(), spawn_enabled=False)
+        async with app.run_test() as pilot:
+            del pilot
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            screen.mono = True
+            word = Word(
+                text=WordText("cat"),
+                tier=Tier.T1,
+                corruption=Corruption.REVERSED,
+            )
+            screen.set_restored(spawn_enemy(initial_arena(), word))
+            screen.tick(0.0)
+            return screen.foes_text
+
+    text = asyncio.run(_scenario())
+    assert "tac" in text
+    assert "cat" not in text
 
 
 def test_death_stays_on_arena_screen() -> None:

@@ -104,12 +104,10 @@ class Profile(BaseModel):
     def _check_palette(self) -> Self:
         """Re-validate the palette enum on load (exhaustive over Palette)."""
         match self.settings.palette:
-            case Palette.STANDARD | Palette.PROTAN | Palette.DEUTAN:
+            case Palette.STANDARD | Palette.PROTAN | Palette.DEUTAN | Palette.TRITAN:
                 return self
-            case _ as other:
-                if other is Palette.TRITAN:
-                    return self
-                assert_never(other)
+            case _:
+                assert_never(self.settings.palette)
 
 
 def load_profile(profile_dir: Path) -> Profile:

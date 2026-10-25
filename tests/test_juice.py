@@ -14,11 +14,12 @@ from typing import Final
 import pytest
 from textual import events
 
-from tsurv.app import BOSS_EVERY, ArenaScreen, TypeSurvivorsApp
+from tsurv.app import BOSS_EVERY, WAVE_SECONDS, ArenaScreen, TypeSurvivorsApp
 from tsurv.arena import EnemyKind, seconds_to_impact
 from tsurv.combat import SHIELD_STREAK_EVERY
 from tsurv.juice import (
     HIT_STOP_S,
+    LOW_HP_FRACTION,
     PARTICLE_BURST,
     SLOW_MO_S,
     SLOW_MO_SCALE,
@@ -47,10 +48,9 @@ _BOSS_IMPACT_AT_EIGHT: Final = 20.0
 _RANK1_BARS: Final = 3
 _SPAWN_GAP_TICK: Final = 3.5
 _HIT_STOP_WAIT: Final = 0.12
-_WAVE_SECONDS: Final = 30.0
-_LOW_HP: Final = 30.0
-_JUST_ABOVE_LOW_HP: Final = 31.0
 _FULL_HP: Final = 100.0
+_LOW_HP: Final = LOW_HP_FRACTION * _FULL_HP
+_JUST_ABOVE_LOW_HP: Final = 31.0
 _CAL_A: Final = 10.0
 _CAL_B: Final = 70.0
 _CAL_C: Final = 130.0
@@ -106,6 +106,8 @@ def test_hit_stop_freezes_then_releases() -> None:
 
 def test_streak_eight_kill_arms_half_second_slow_mo() -> None:
     """The x8 streak milestone (shared with the shield) slows time for 0.5s."""
+    zero = trigger_kill(JuiceState(), 0, _NOW)
+    assert zero.slow_mo_until == 0.0
     calm = trigger_kill(JuiceState(), SHIELD_STREAK_EVERY - 1, _NOW)
     assert calm.slow_mo_until == 0.0
     assert time_scale(calm, _NOW) == 1.0
@@ -210,6 +212,30 @@ def test_pilot_bar_burn_freezes_tick() -> None:
     asyncio.run(_scenario())
 
 
+def test_pilot_slow_mo_halves_foe_motion() -> None:
+    """An x8 streak visibly slows the sim: one tick moves foes half as far."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(initial_words=(), spawn_enabled=False, seed=_SEED)
+        async with app.run_test() as pilot:
+            del pilot
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            assert not screen.slow_mo_active
+            words = ("cat", "dog", "bat", "rat", "hat", "mat", "sat", "fat")
+            for word in words:
+                screen.spawn_test_enemy(word, distance=_IMPACT_FAR)
+            for word in words:
+                for char in word:
+                    await screen.on_key(events.Key(char, char))
+            assert screen.slow_mo_active
+            screen.spawn_test_enemy("owl", distance=_IMPACT_FAR)
+            screen.tick(1.0)
+            assert screen.arena_state.enemies[0].distance == _IMPACT_FAR - SLOW_MO_SCALE
+
+    asyncio.run(_scenario())
+
+
 def test_pilot_wave1_calibrates_base_wpm() -> None:
     """Clearing wave 1 writes the measured base rate onto the profile."""
 
@@ -224,7 +250,7 @@ def test_pilot_wave1_calibrates_base_wpm() -> None:
                 foe = screen.arena_state.enemies[0]
                 for char in str(foe.word.text):
                     await screen.on_key(events.Key(char, char))
-            screen.tick(_WAVE_SECONDS)
+            screen.tick(WAVE_SECONDS)
             assert screen.arena_state.wave == _WAVE_TWO
             assert app.profile.base_wpm is not None
             assert app.profile.base_wpm >= 0.0

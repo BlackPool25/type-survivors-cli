@@ -95,7 +95,7 @@ def _by_id(enemies: Sequence[EnemyState], target: EnemyId) -> EnemyState | None:
 
 
 def _nearest(enemies: Sequence[EnemyState]) -> EnemyState:
-    """Pick the closest enemy, breaking ties by lower id."""
+    """Pick the closest enemy, breaking ties by lower id (needs ≥1 enemy)."""
     return min(enemies, key=lambda enemy: (enemy.distance, enemy.id))
 
 
@@ -117,11 +117,9 @@ def lock_target(
     exists, a letter matching another same-initial word's second letter
     disambiguates the pair. Unrelated keys keep a live lock sticky.
     """
-    match ch:
-        case "\x1b":
-            return None
-        case _:
-            _check_key(ch)
+    if ch == ESC:
+        return None
+    _check_key(ch)
     if current is not None:
         locked = _by_id(enemies, current)
         if locked is not None:
@@ -171,11 +169,9 @@ def apply_keystroke(  # noqa: PLR0913, PLR0917 - seven explicit params per rulin
     """
     if now < stunned_until:
         return TypoStun(stun_until=stunned_until, streak=0)
-    match ch:
-        case "\x1b":
-            return NoTarget()
-        case _:
-            _check_key(ch)
+    if ch == ESC:
+        return NoTarget()
+    _check_key(ch)
     locked = _by_id(enemies, current) if current is not None else None
     outcome: Keystroke
     if locked is None:
@@ -205,17 +201,20 @@ def apply_keystroke(  # noqa: PLR0913, PLR0917 - seven explicit params per rulin
 
 def keystroke_target(result: Keystroke) -> EnemyId | None:
     """Extract the locked enemy from any keystroke outcome (exhaustive)."""
-    if isinstance(result, (Advanced, Kill)):
-        return result.target
-    if isinstance(result, TypoStun):
-        return None
-    if isinstance(result, NoTarget):  # pyright: ignore[reportUnnecessaryIsInstance]
-        return None
-    assert_never(result)
+    match result:
+        case Advanced(target=target) | Kill(target=target):
+            return target
+        case TypoStun() | NoTarget():
+            return None
+        case _:
+            assert_never(result)
 
 
 def rolling_wpm(events: Sequence[float], now: float) -> float:
-    """Completions per minute over the trailing words (at most 20)."""
+    """Completions per minute over the trailing words (at most 20).
+
+    `events` must be chronological: the tail slice keeps the latest entries.
+    """
     recent = [moment for moment in events if moment <= now][-WPM_WINDOW:]
     if len(recent) < WPM_MIN_SAMPLES:
         return 0.0

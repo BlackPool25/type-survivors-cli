@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from tsurv.profile import (
+    PROFILE_FILENAME,
     KeyStat,
     Palette,
     Profile,
@@ -57,21 +58,21 @@ def test_round_trip_save_load(tmp_path: Path) -> None:
 
 def test_load_corrupt_json_raises(tmp_path: Path) -> None:
     """Garbage bytes never silently reset history — they raise ProfileError."""
-    _ = (tmp_path / "profile.json").write_text("{not json", encoding="utf-8")
+    _ = (tmp_path / PROFILE_FILENAME).write_text("{not json", encoding="utf-8")
     with pytest.raises(ProfileError):
         _ = load_profile(tmp_path)
 
 
 def test_load_non_utf8_bytes_raises(tmp_path: Path) -> None:
     """Binary garbage never leaks raw UnicodeDecodeError — ProfileError instead."""
-    _ = (tmp_path / "profile.json").write_bytes(b"\xff\xfe\x00bad")
+    _ = (tmp_path / PROFILE_FILENAME).write_bytes(b"\xff\xfe\x00bad")
     with pytest.raises(ProfileError):
         _ = load_profile(tmp_path)
 
 
 def test_load_bad_palette_raises(tmp_path: Path) -> None:
     """An unknown palette string fails load with ProfileError, not a default."""
-    _ = (tmp_path / "profile.json").write_text(
+    _ = (tmp_path / PROFILE_FILENAME).write_text(
         '{"gold": 10, "settings": {"palette": "NEON", "sound_on": true}}',
         encoding="utf-8",
     )
@@ -121,6 +122,6 @@ def test_save_creates_dir_and_leaves_no_tmp(tmp_path: Path) -> None:
     """Save makes missing dirs and never leaves a tmp file behind."""
     target = tmp_path / "nested" / "player"
     save_profile(target, Profile(gold=_GOLD))
-    assert (target / "profile.json").is_file()
+    assert (target / PROFILE_FILENAME).is_file()
     assert list(target.glob("*.tmp")) == []
     assert load_profile(target).gold == _GOLD

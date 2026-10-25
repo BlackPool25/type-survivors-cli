@@ -41,6 +41,7 @@ from tsurv.juice import (
     low_hp,
     step_juice,
     telegraph_showing,
+    time_scale,
     trigger_bar_break,
     trigger_kill,
 )
@@ -95,6 +96,8 @@ _START_HP: Final = 100.0
 
 _BOSS_GENERATION_ATTEMPTS: Final = 2
 """Grammar tries per boss spawn before falling back to the T3 word list."""
+# Wave entered immediately after wave 1 clears: the only calibration point.
+_CALIBRATION_WAVE: Final = 2
 
 HP_GREEN: Final = "#39FF6A"
 """Typed-prefix highlight (Blood Neon Void HP green, cf. hub.tcss)."""
@@ -379,6 +382,8 @@ class ArenaScreen(Screen[None]):
         if self._juice.frozen_at(time.monotonic()):
             self._refresh()
             return
+        now = time.monotonic()
+        dt *= time_scale(self._juice, now)
         self._run_clock += dt
         if self._practice:
             self._arena, leaked = practice_advance(self._arena, dt)
@@ -388,7 +393,6 @@ class ArenaScreen(Screen[None]):
             self._killer = leaked[0]
             self._refresh()
             return
-        now = time.monotonic()
         self._wave_clock += dt
         if self._arena.boss_wave:
             if boss_cleared(self._arena):
@@ -510,6 +514,8 @@ class ArenaScreen(Screen[None]):
 
     def _calibrate_wave(self) -> None:
         """Write the wave-1 measured base rate onto the profile once."""
+        if self._arena.wave != _CALIBRATION_WAVE:
+            return
         if self._practice or not self._kill_times:
             return
         if self._app_ref is None or self._app_ref.profile.base_wpm is not None:
@@ -591,8 +597,8 @@ class ArenaScreen(Screen[None]):
                 )
                 _ = text.append(raw[state.typed + 1 :])
             else:
-                shown = raw if self.mono else corrupted_display(foe.word)
-                _ = text.append(prefix + shown)
+                # Mono strips color only: corruption still reads via glyphs.
+                _ = text.append(prefix + corrupted_display(foe.word))
         return text
 
     def _refresh_boss_bars(self) -> None:

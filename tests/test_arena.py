@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Final
 
 from tsurv.arena import (
+    KILL_POINTS_PER_CHAR,
     LEAK_DAMAGE,
     EnemyKind,
     Score,
@@ -22,6 +23,7 @@ from tsurv.arena import (
 )
 from tsurv.combat import (
     SHIELD_DURATION,
+    SHIELD_STREAK_EVERY,
     STUN_DURATION,
     Keystroke,
     Kill,
@@ -48,7 +50,6 @@ def test_typing_full_word_kills_and_scores() -> None:
     """Feeding a grunt's chars kills it, bumps kills/streak, raises score."""
     state = spawn_enemy(initial_arena(), _word("cat"))
     outcome: Keystroke = NoTarget()
-    outcome = NoTarget()
     for index, char in enumerate("cat"):
         state, outcome = handle_keystroke(state, char, _NOW + float(index))
     assert isinstance(outcome, Kill)
@@ -81,7 +82,7 @@ def test_keys_inside_stun_window_are_swallowed() -> None:
 
 def test_streak_eight_kill_produces_shield() -> None:
     """The arena is the shield_until producer: streak-x8 sets now+1.0."""
-    state = initial_arena(streak=7)
+    state = initial_arena(streak=SHIELD_STREAK_EVERY - 1)
     state = spawn_enemy(state, _word("cat"))
     outcome = NoTarget()
     for index, char in enumerate("cat"):
@@ -92,7 +93,10 @@ def test_streak_eight_kill_produces_shield() -> None:
 
 def test_shield_merge_never_clobbers_live_window() -> None:
     """A fresh streak shield max()-merges over a longer live shield."""
-    state = initial_arena(streak=7, shield_until=_NOW + _LONG_WINDOW)
+    state = initial_arena(
+        streak=SHIELD_STREAK_EVERY - 1,
+        shield_until=_NOW + _LONG_WINDOW,
+    )
     state = spawn_enemy(state, _word("cat"))
     outcome = NoTarget()
     for index, char in enumerate("cat"):
@@ -230,7 +234,7 @@ def test_chain_lightning_arcs_to_nearest_others() -> None:
     assert zapped == _CHAIN_ARCS
     assert [str(foe.word.text) for foe in after.enemies] == ["aaa"]
     assert after.kills == _CHAIN_ARCS
-    assert int(after.score) == (3 + 3) * 10
+    assert int(after.score) == (3 + 3) * KILL_POINTS_PER_CHAR
 
 
 def test_chain_lightning_caps_at_two_arcs() -> None:

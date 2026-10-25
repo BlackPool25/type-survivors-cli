@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NewType, TypedDict, assert_never
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
     import random
@@ -106,7 +106,8 @@ def _load_words(tier: Tier, filename: str) -> tuple[WordText, ...]:
     try:
         text = (_WORDS_DIR / filename).read_text(encoding="utf-8")
         words = _WORD_FILE_ADAPTER.validate_json(text)["words"]
-    except (OSError, ValidationError) as exc:
+    except (OSError, ValueError) as exc:
+        # ValueError covers ValidationError and non-UTF-8 bytes alike.
         msg = f"cannot load {tier.value} words from {filename}: {exc}"
         raise WordSelectionError(msg) from exc
     unique: list[WordText] = []

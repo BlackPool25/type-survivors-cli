@@ -170,6 +170,8 @@ def pick_slot(
             for option in options
             if any(key.lower() in option.lower() for key in weak_keys if key)
         ]
+        # The hook path spends one rng.random() before the choice, so the
+        # hook-absent path below stays a single rng.choice: the pinned order.
         if weak and rng.random() < WEAK_SLOT_BIAS:
             return rng.choice(weak)
     return rng.choice(options)

@@ -42,6 +42,7 @@ def weakest_keys(
         (key for key, stat in per_key.items() if stat.presses > 0),
         key=lambda key: (
             per_key[key].accuracy,
+            # Negated so slower averages sort first under the ascending sort.
             -(per_key[key].total_time / per_key[key].presses),
             key,
         ),

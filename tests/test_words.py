@@ -224,6 +224,12 @@ def test_broken_word_file_error_names_tier_and_file(
         _ = (args, kwargs)
         return real_validate("not json")
 
+    def _bad_bytes(*args: object, **kwargs: object) -> str:
+        """Simulate a non-UTF-8 word file (UnicodeDecodeError is a ValueError)."""
+        _ = (args, kwargs)
+        encoding = "utf-8"
+        raise UnicodeDecodeError(encoding, b"\xff", 0, 1, "invalid start byte")
+
     def _expect_load_error(label: str) -> None:
         """Reload with broken I/O; the error must name the tier and file."""
         try:
@@ -239,6 +245,8 @@ def test_broken_word_file_error_names_tier_and_file(
         assert "english_1k.json" in error
 
     monkeypatch.setattr(Path, "read_text", _no_disk)
+    _expect_load_error("T1")
+    monkeypatch.setattr(Path, "read_text", _bad_bytes)
     _expect_load_error("T1")
     monkeypatch.setattr(TypeAdapter, "validate_json", _bad_json)
     _expect_load_error("T1")
@@ -277,6 +285,4 @@ def test_pick_word_seeded_rng_biases_weak_keys() -> None:
     hooked_hits = sum(1 for word in hooked if weak_hits(str(word), (_SEEDED_KEY,)))
     plain_hits = sum(1 for word in plain if weak_hits(str(word), (_SEEDED_KEY,)))
     assert hooked_hits > plain_hits
-    assert any(
-        not weak_hits(str(word), (_SEEDED_KEY,)) for word in hooked
-    )
+    assert any(not weak_hits(str(word), (_SEEDED_KEY,)) for word in hooked)

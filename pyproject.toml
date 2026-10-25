@@ -23,7 +23,7 @@ filterwarnings = ["error"]
 target-version = "py313"
 # Legacy asset-generator scripts at repo root predate the strict gates and are
 # out of scope (frozen at 689311c); only new game/test code is linted.
-exclude = ["gen_shell.py", "gen_sprites.py", "sprites.py"]
+exclude = ["gen_sprites.py", "sprites.py"]
 
 [tool.ruff.lint]
 select = ["ALL"]

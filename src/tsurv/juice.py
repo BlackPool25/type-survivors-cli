@@ -110,7 +110,12 @@ def spawn_burst(
 
 
 def trigger_bar_break(state: JuiceState, now: float, rng: random.Random) -> JuiceState:
-    """Raise knockback + hit-stop + flash, max trauma, burst particles."""
+    """Raise knockback + hit-stop + flash, max trauma, burst particles.
+
+    The knockback window intentionally equals the 80ms hit-stop: one blast,
+    no tail (DESIGN section 5). Particles are one-shot: a re-break replaces
+    the burst rather than stacking it.
+    """
     window = now + HIT_STOP_S
     return replace(
         state,
@@ -125,7 +130,7 @@ def trigger_bar_break(state: JuiceState, now: float, rng: random.Random) -> Juic
 def trigger_kill(state: JuiceState, streak_after: int, now: float) -> JuiceState:
     """Rattle the frame on a kill; arm 0.5s slow-mo on the x8 milestone."""
     slow_mo_until = state.slow_mo_until
-    if streak_after % SHIELD_STREAK_EVERY == 0:
+    if streak_after > 0 and streak_after % SHIELD_STREAK_EVERY == 0:
         slow_mo_until = now + SLOW_MO_S
     return replace(
         state,

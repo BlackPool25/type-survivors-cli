@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 from tsurv.combat import (
+    BASE_SPAWN_INTERVAL,
+    ESC,
+    SHIELD_DURATION,
+    SHIELD_STREAK_EVERY,
+    SPAWN_CLAMP_MAX,
+    SPAWN_CLAMP_MIN,
+    STUN_DURATION,
     Advanced,
     EnemyId,
     EnemyState,
@@ -17,13 +24,6 @@ from tsurv.combat import (
     spawn_interval,
 )
 from tsurv.words import Tier, Word, WordText
-
-ESC = "\x1b"
-
-_STUN_WINDOW = 0.6
-_SHIELD_WINDOW = 1.0
-_SHIELD_EVERY = 8
-_BASE_GAP = 2.0
 
 
 def _enemy(eid: int, text: str, distance: float = 5.0) -> EnemyState:
@@ -75,10 +75,10 @@ def test_correct_char_advances() -> None:
 
 
 def test_wrong_char_stuns_and_resets_streak() -> None:
-    """A wrong char jams the gun for 0.6s and resets the streak."""
+    """A wrong char jams the gun, resetting the streak (STUN_DURATION)."""
     enemies = (_enemy(0, "cat"),)
     result = apply_keystroke("x", enemies, EnemyId(0), 1, 5, 10.0, 0.0)
-    assert result == TypoStun(stun_until=10.6, streak=0)
+    assert result == TypoStun(stun_until=10.0 + STUN_DURATION, streak=0)
 
 
 def test_completing_word_kills() -> None:
@@ -103,8 +103,8 @@ def test_completing_word_kills() -> None:
 def test_stunned_input_is_ignored() -> None:
     """Input during the jam window reports the remaining stun."""
     enemies = (_enemy(0, "cat"),)
-    result = apply_keystroke("a", enemies, EnemyId(0), 1, 0, 10.2, 10.6)
-    assert result == TypoStun(stun_until=10.6, streak=0)
+    result = apply_keystroke("a", enemies, EnemyId(0), 1, 0, 10.2, 10.0 + STUN_DURATION)
+    assert result == TypoStun(stun_until=10.0 + STUN_DURATION, streak=0)
 
 
 def test_no_match_reports_no_target() -> None:
@@ -171,9 +171,9 @@ def _kill(text: str, eid: int, streak: int, now: float) -> Kill:
 
 def test_streak_eighth_kill_grants_shield() -> None:
     """The kill reaching a multiple-of-8 streak shields for 1s."""
-    kill = _kill("cat", 0, _SHIELD_EVERY - 1, 100.0)
-    assert kill.streak == _SHIELD_EVERY
-    assert kill.shield_until == 100.0 + _SHIELD_WINDOW
+    kill = _kill("cat", 0, SHIELD_STREAK_EVERY - 1, 100.0)
+    assert kill.streak == SHIELD_STREAK_EVERY
+    assert kill.shield_until == 100.0 + SHIELD_DURATION
 
 
 def test_non_milestone_kill_grants_no_shield() -> None:
@@ -185,7 +185,7 @@ def test_non_milestone_kill_grants_no_shield() -> None:
 def test_sixteenth_kill_shields_again() -> None:
     """Every multiple of 8 shields, not just the first."""
     kill = _kill("cat", 0, 15, 50.0)
-    assert (kill.streak, kill.shield_until) == (16, 51.0)
+    assert (kill.streak, kill.shield_until) == (16, 50.0 + SHIELD_DURATION)
 
 
 def test_rolling_wpm_over_word_completions() -> None:
@@ -211,15 +211,15 @@ def test_rolling_wpm_needs_history() -> None:
 
 def test_spawn_interval_parity_is_base() -> None:
     """Matching player and reference WPM spawns at the base gap."""
-    assert spawn_interval(60.0, 60.0) == _BASE_GAP
+    assert spawn_interval(60.0, 60.0) == BASE_SPAWN_INTERVAL
 
 
 def test_spawn_interval_clamps() -> None:
     """Faster players floor at 0.6x; slower (or idle) cap at 1.6x."""
-    assert spawn_interval(60.0, 600.0) == 2.0 * 0.6
-    assert spawn_interval(60.0, 100.0) == 2.0 * 0.6
-    assert spawn_interval(600.0, 60.0) == 2.0 * 1.6
-    assert spawn_interval(60.0, 0.0) == 2.0 * 1.6
+    assert spawn_interval(60.0, 600.0) == BASE_SPAWN_INTERVAL * SPAWN_CLAMP_MIN
+    assert spawn_interval(60.0, 100.0) == BASE_SPAWN_INTERVAL * SPAWN_CLAMP_MIN
+    assert spawn_interval(600.0, 60.0) == BASE_SPAWN_INTERVAL * SPAWN_CLAMP_MAX
+    assert spawn_interval(60.0, 0.0) == BASE_SPAWN_INTERVAL * SPAWN_CLAMP_MAX
 
 
 def test_keystroke_target_extracts_lock() -> None:
@@ -229,12 +229,12 @@ def test_keystroke_target_extracts_lock() -> None:
     )
     kill = Kill(target=EnemyId(1), streak=8, shield_until=101.0)
     assert keystroke_target(kill) == EnemyId(1)
-    assert keystroke_target(TypoStun(stun_until=10.6, streak=0)) is None
+    assert keystroke_target(TypoStun(stun_until=10.0 + STUN_DURATION, streak=0)) is None
     assert keystroke_target(NoTarget()) is None
 
 
 def test_esc_during_stun_stays_jammed() -> None:
     """The jam window blocks every key, including Esc."""
     enemies = (_enemy(0, "cat"),)
-    result = apply_keystroke(ESC, enemies, EnemyId(0), 1, 0, 10.2, 10.6)
-    assert result == TypoStun(stun_until=10.6, streak=0)
+    result = apply_keystroke(ESC, enemies, EnemyId(0), 1, 0, 10.2, 10.0 + STUN_DURATION)
+    assert result == TypoStun(stun_until=10.0 + STUN_DURATION, streak=0)

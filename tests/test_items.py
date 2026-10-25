@@ -5,6 +5,10 @@ from __future__ import annotations
 import pytest
 
 from tsurv.items import (
+    BLOOD_VIAL_HEAL,
+    FROST_VEIL_DURATION,
+    NOVA_CHARGE_SECONDS,
+    NOVA_MIN_ACCURACY,
     ActiveEffects,
     ItemError,
     ItemKind,
@@ -13,8 +17,6 @@ from tsurv.items import (
     trigger,
 )
 
-_HEAL = 30.0
-_FROST_WINDOW = 5.0
 _MAX_HP = 100.0
 _MID_HP = 70.0
 _LOW_HP = 40.0
@@ -24,7 +26,7 @@ def test_blood_vial_heals_thirty() -> None:
     """Blood Vial restores 30 HP and is consumed."""
     result = trigger(ItemKind.BLOOD_VIAL, 50.0, 100.0, 0, 10.0)
     assert result == TriggerResult(
-        hp=50.0 + _HEAL,
+        hp=50.0 + BLOOD_VIAL_HEAL,
         frost_until=0.0,
         shield_until=0.0,
         revives_used=0,
@@ -42,7 +44,7 @@ def test_blood_vial_caps_at_max() -> None:
 def test_frost_veil_sets_slow_window() -> None:
     """Frost Veil opens an absolute 5s slow window and is consumed."""
     result = trigger(ItemKind.FROST_VEIL, _MID_HP, _MAX_HP, 0, 10.0)
-    assert result.frost_until == 10.0 + _FROST_WINDOW
+    assert result.frost_until == 10.0 + FROST_VEIL_DURATION
     assert result.hp == _MID_HP
     assert result.consumed is True
 
@@ -92,15 +94,15 @@ def test_chain_spark_consumes_without_touching_vitals() -> None:
 
 def test_nova_locked_below_threshold() -> None:
     """NOVA stays locked below 95% accuracy or before 30 charged seconds."""
-    assert nova_ready(0.949, 30.0) is False
-    assert nova_ready(1.0, 29.9) is False
+    assert nova_ready(NOVA_MIN_ACCURACY - 0.001, NOVA_CHARGE_SECONDS) is False
+    assert nova_ready(1.0, NOVA_CHARGE_SECONDS - 0.1) is False
     assert nova_ready(0.5, 120.0) is False
 
 
 def test_nova_ready_at_threshold() -> None:
     """NOVA fires at 95%+ accuracy after 30 charged seconds."""
-    assert nova_ready(0.95, 30.0) is True
-    assert nova_ready(1.0, 60.0) is True
+    assert nova_ready(NOVA_MIN_ACCURACY, NOVA_CHARGE_SECONDS) is True
+    assert nova_ready(1.0, NOVA_CHARGE_SECONDS + 30.0) is True
 
 
 def test_effects_windows_are_absolute() -> None:
@@ -121,3 +123,5 @@ def test_trigger_rejects_bad_vitals() -> None:
         _ = trigger(ItemKind.BLOOD_VIAL, 101.0, 100.0, 0, 10.0)
     with pytest.raises(ItemError):
         _ = trigger(ItemKind.BLOOD_VIAL, 50.0, 100.0, -1, 10.0)
+    with pytest.raises(ItemError, match="now"):
+        _ = trigger(ItemKind.BLOOD_VIAL, 50.0, 100.0, 0, -0.1)

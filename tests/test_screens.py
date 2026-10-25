@@ -11,6 +11,7 @@ import pytest
 from textual.widgets import Label
 
 from tsurv.app import (
+    BOSS_EVERY,
     ArenaScreen,
     HubScreen,
     ReportScreen,
@@ -83,7 +84,7 @@ _BARS_RANK_ONE: Final = 3
 _BARS_RANK_TWO: Final = 4
 """Boss bars at wave 10 (2 + rank 2)."""
 _GENERATION_ATTEMPTS: Final = 2
-"""Grammar tries (first attempt plus one retry) before the T3 fallback."""
+"""Pinned retry count (kept local: the source name is module-private)."""
 
 
 def _word(text: str) -> Word:
@@ -272,7 +273,7 @@ def test_boss_wave_spawns_single_multibar_foe() -> None:
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, ArenaScreen)
-            screen.set_restored(replace(initial_arena(), wave=5))
+            screen.set_restored(replace(initial_arena(), wave=BOSS_EVERY))
             for _ in range(20):
                 screen.tick(0.5)
                 if screen.arena_state.enemies:
