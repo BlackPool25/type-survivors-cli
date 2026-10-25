@@ -1263,18 +1263,40 @@ class ReportScreen(Screen[None]):
             self._app_ref.return_to_arena()
 
 
-_LOGO_CELLS_W: Final = 48
-"""Baked logo width on the hub; 10 half-cell rows at the 96x40 source art."""
+_FULL_LOGO_W: Final = 48
+"""Full bake: 10 half-cell rows at the 96x40 source art."""
+
+_COMPACT_LOGO_W: Final = 24
+"""Compact bake: 5 rows, the largest that fits an 80x24 hub column."""
+
+_MINI_LOGO_W: Final = 16
+"""Fallback bake: 3 rows for viewports shorter than 24 rows."""
+
+_TALL_H: Final = 30
+"""Full logo at or above this viewport height (content needs 28 of 29)."""
+
+_SHORT_H: Final = 24
+"""Compact logo at or above this height (content needs 23 of 23)."""
+
+
+def _hub_logo_cells(height: int) -> int:
+    """Pick the largest logo bake whose column fits the viewport height."""
+    if height >= _TALL_H:
+        return _FULL_LOGO_W
+    if height >= _SHORT_H:
+        return _COMPACT_LOGO_W
+    return _MINI_LOGO_W
+
+
+def _hub_logo_text(cells_w: int) -> Text | str:
+    """Baked logo cells: styled text in color, plain blocks in mono."""
+    mono = not colors_enabled()
+    baked = render_logo(cells_w, mono=mono)
+    return baked if mono else Text.from_ansi(baked)
+
 
 _HUB_DECRYPT_STEP_S: Final = 1 / 30
 """Subtitle decrypt pacing: 30fps playback of the sampled TTE frames."""
-
-
-def _hub_logo_text() -> Text | str:
-    """Baked logo cells: styled text in color, plain blocks in mono."""
-    mono = not colors_enabled()
-    baked = render_logo(_LOGO_CELLS_W, mono=mono)
-    return baked if mono else Text.from_ansi(baked)
 
 
 class HubScreen(Screen[None]):
@@ -1287,15 +1309,14 @@ class HubScreen(Screen[None]):
         "#hub-center { height: 1fr; }\n"
         "#hub-column { width: 1fr; height: auto; align: center middle; }\n"
         "#hub-logo { width: 1fr; height: auto; text-align: center; }\n"
-        "#hub-banner { width: 1fr; height: 5; color: #FF2A2A; "
-        "text-style: bold; text-align: center; content-align: center middle; "
-        "border: solid #952CF5; }\n"
+        "#hub-banner { width: 1fr; height: 3; color: #FF2A2A; "
+        "text-style: bold; text-align: center; content-align: center middle; }\n"
         "#subtitle { width: 1fr; height: 1; color: #B57CFF; text-align: center; }\n"
-        "#hub-header { width: 80%; height: 6; border: solid #952CF5; }\n"
+        "#hub-header { width: 80%; height: 4; border: solid #952CF5; }\n"
         "#gold { width: 1fr; height: 1; color: #FFD23F; text-style: bold; "
         "text-align: center; }\n"
         "#hub-greeting { width: 1fr; height: 1; color: #CACACA; text-align: center; }\n"
-        "#hub-panel { width: 80%; height: 11; border: solid #952CF5; }\n"
+        "#hub-panel { width: 80%; height: 9; border: solid #952CF5; }\n"
         "#hub-list { width: 1fr; height: 6; }\n"
         "#hub-message { width: 1fr; height: 1; color: #FFD23F; }\n"
         "#hub-stats { width: 1fr; height: 1; color: #FFD23F; text-align: center; }\n"
@@ -1326,7 +1347,10 @@ class HubScreen(Screen[None]):
                 id="hub-column",
             ),
         ):
-            yield Label(_hub_logo_text(), id="hub-logo")
+            yield Label(
+                _hub_logo_text(_hub_logo_cells(self.size.height)),
+                id="hub-logo",
+            )
             yield Label(hub_banner_text(mono=not colors_enabled()), id="hub-banner")
             yield Label(TAGLINE, id="subtitle")
             with Vertical(id="hub-header"):

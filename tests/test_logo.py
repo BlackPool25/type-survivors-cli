@@ -14,6 +14,10 @@ from tsurv.profile import Profile, RunSummary
 
 _LOGO_W = 40
 _DECRYPT_LIMIT = 4
+_VIEW_W = 80
+_VIEW_H = 24
+_SHORT_LOGO_ROWS = 5
+"""Compact logo height: the 24-cell bake at 80x24 must fit, not clip."""
 
 
 def test_bake_deterministic() -> None:
@@ -95,5 +99,39 @@ def test_hub_has_all_sections_at_80x24() -> None:
             list_y = screen.query_one("#hub-list", Label).region.y
             stats_y = screen.query_one("#hub-stats", Label).region.y
             assert logo_y <= list_y <= stats_y
+
+    asyncio.run(_scenario())
+
+
+def test_hub_fits_80x24_no_clipping() -> None:
+    """Every hub section sits fully inside the 80x24 viewport, logo shrunk."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(
+            initial_words=(),
+            spawn_enabled=False,
+            profile=Profile(),
+            start_at_hub=True,
+        )
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, HubScreen)
+            for selector in (
+                "#hub-logo",
+                "#hub-banner",
+                "#subtitle",
+                "#hub-header",
+                "#hub-panel",
+                "#hub-stats",
+                "#hub-hint",
+            ):
+                region = screen.query_one(selector).region
+                assert region.y >= 0, selector
+                assert region.bottom <= _VIEW_H, selector
+                assert region.x >= 0, selector
+                assert region.right <= _VIEW_W, selector
+            logo_height = screen.query_one("#hub-logo", Label).region.height
+            assert logo_height <= _SHORT_LOGO_ROWS
 
     asyncio.run(_scenario())
