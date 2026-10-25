@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import random
 from pathlib import Path
 from typing import Final, TypedDict
 
@@ -18,6 +19,7 @@ from tsurv.words import (
     WordText,
     chunk_boss_sentence,
     pick_word,
+    weak_hits,
 )
 
 _T1_MIN_LEN = 3
@@ -240,3 +242,41 @@ def test_broken_word_file_error_names_tier_and_file(
     _expect_load_error("T1")
     monkeypatch.setattr(TypeAdapter, "validate_json", _bad_json)
     _expect_load_error("T1")
+
+
+_SEEDED_KEY: Final = "q"
+"""Rare T1 letter for the seeded bias check (5 of 687 words)."""
+
+_SEEDED_DRAWS: Final = 2000
+"""Draw count pinning the weak-key bias distribution (verified 44 vs 9)."""
+
+_SEED: Final = 7
+"""Fixed RNG seed making the bias distribution deterministic."""
+
+
+def _seeded_draws(*, weak_keys: tuple[str, ...]) -> list[WordText]:
+    """Draw words from a freshly seeded RNG (deterministic per seed)."""
+    rng = random.Random(_SEED)  # noqa: S311 - deterministic test RNG
+    return [
+        pick_word(Tier.T1, (), (), weak_keys=weak_keys, rng=rng).text
+        for _ in range(_SEEDED_DRAWS)
+    ]
+
+
+def test_pick_word_seeded_rng_is_deterministic() -> None:
+    """The same seed and hook deal the identical word sequence twice."""
+    assert _seeded_draws(weak_keys=(_SEEDED_KEY,)) == _seeded_draws(
+        weak_keys=(_SEEDED_KEY,),
+    )
+
+
+def test_pick_word_seeded_rng_biases_weak_keys() -> None:
+    """Seeded draws favor weak-key words while keeping the rest eligible."""
+    hooked = _seeded_draws(weak_keys=(_SEEDED_KEY,))
+    plain = _seeded_draws(weak_keys=())
+    hooked_hits = sum(1 for word in hooked if weak_hits(str(word), (_SEEDED_KEY,)))
+    plain_hits = sum(1 for word in plain if weak_hits(str(word), (_SEEDED_KEY,)))
+    assert hooked_hits > plain_hits
+    assert any(
+        not weak_hits(str(word), (_SEEDED_KEY,)) for word in hooked
+    )

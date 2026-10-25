@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Final, NewType, TypedDict, assert_never
 from pydantic import TypeAdapter, ValidationError
 
 if TYPE_CHECKING:
+    import random
     from collections.abc import Mapping, Sequence
 
 _WORDS_DIR: Final = Path(__file__).resolve().parent.parent.parent / "words"
@@ -169,11 +170,11 @@ def _pool_for(tier: Tier) -> tuple[WordText, ...]:
             return _T3_POOL
         case Tier.CODE:
             return _CODE_POOL
-        case _ as other:
-            if other is Tier.BOSS:
-                msg = "boss words come only from chunk_boss_sentence pools"
-                raise WordSelectionError(msg)
-            assert_never(other)
+        case Tier.BOSS:
+            msg = "boss words come only from chunk_boss_sentence pools"
+            raise WordSelectionError(msg)
+        case _:
+            assert_never(tier)
 
 
 def chunk_boss_sentence(sentence: str) -> list[str]:
@@ -217,12 +218,14 @@ def pick_word(
     on_screen: Sequence[str],
     *,
     weak_keys: Sequence[str] = (),
+    rng: random.Random | None = None,
 ) -> Word:
     """Pick a random word for a tier honoring spawn constraints.
 
     Excludes words already on screen, words in the trailing 30 history
     entries, and initials already used twice on screen (the initials
-    filter relaxes when it alone would empty the pool).
+    filter relaxes when it alone would empty the pool). Pass `rng` for a
+    seeded, deterministic draw; without it the crypto source deals.
     """
     pool = _pool_for(tier)
     recent = set(history[-_HISTORY_WINDOW:])
@@ -239,4 +242,6 @@ def pick_word(
         msg = f"no {tier.value} word satisfies spawn constraints"
         raise WordSelectionError(msg)
     weighted = reweight_for_weak_keys(tuple(candidates), weak_keys)
+    if rng is not None:
+        return Word(text=rng.choice(weighted), tier=tier)
     return Word(text=secrets.choice(weighted), tier=tier)

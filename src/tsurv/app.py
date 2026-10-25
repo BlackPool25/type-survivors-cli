@@ -30,10 +30,34 @@ from tsurv.arena import (
     spawn_enemy,
 )
 from tsurv.combat import EnemyId, Kill, TypoStun, rolling_wpm, spawn_interval
-from tsurv.grammar import generate_boss_sentence
-from tsurv.words import Tier, Word, WordText, chunk_boss_sentence, pick_word
+from tsurv.grammar import GrammarError, generate_boss_sentence
+from tsurv.profile import Profile, RunSummary
+from tsurv.report import render_report
+from tsurv.screens import (
+    SHOP_CATALOG,
+    CheckpointError,
+    ShopError,
+    buy_item,
+    load_checkpoint,
+    next_palette,
+    practice_advance,
+    restore,
+    save_checkpoint,
+    snapshot,
+    update_settings,
+)
+from tsurv.words import (
+    TIER_WORDS,
+    Tier,
+    Word,
+    WordText,
+    chunk_boss_sentence,
+    pick_word,
+)
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from textual import events
 
 GUARD_WIDTH: Final = 80
@@ -55,6 +79,9 @@ BOSS_EVERY: Final = 5
 """Boss wave cadence (boss waves end on kill, not on the clock)."""
 
 _START_HP: Final = 100.0
+
+_BOSS_GENERATION_ATTEMPTS: Final = 2
+"""Grammar tries per boss spawn before falling back to the T3 word list."""
 
 HP_GREEN: Final = "#39FF6A"
 """Typed-prefix highlight (Blood Neon Void HP green, cf. hub.tcss)."""
@@ -93,13 +120,38 @@ def sprite_text(kind: EnemyKind, frame: int = 0) -> str:
             glyph = "█▄█"
         case EnemyKind.ELITE:
             glyph = "▀█▀"
-        case _ as other:
-            if other is EnemyKind.BOSS:
-                glyph = "██████"
-            else:
-                assert_never(other)
+        case EnemyKind.BOSS:
+            glyph = "██████"
+        case _:
+            assert_never(kind)
     bob = "" if frame % 2 == 0 else " "
     return f"{glyph}{bob}"
+
+
+def boss_word_text(
+    rank: int,
+    used: set[str],
+    rng: random.Random,
+    weak_keys: tuple[str, ...] = (),
+) -> tuple[str, int]:
+    """Build the single-boss word queue: bars chunks over grammar sentences.
+
+    Returns the space-joined phrase plus its bar count (2 + rank). Grammar
+    gets a retry, then the T3 word list deals so a boss wave always spawns.
+    """
+    bars = 2 + rank
+    for _ in range(_BOSS_GENERATION_ATTEMPTS):
+        try:
+            chunks: list[str] = []
+            while len(chunks) < bars:
+                sentence = generate_boss_sentence(rank, used, rng, weak_keys)
+                chunks.extend(chunk_boss_sentence(sentence))
+            return " ".join(chunks[:bars]), bars
+        except GrammarError:
+            continue
+    pool = tuple(word for word in TIER_WORDS[Tier.T3] if str(word).isascii())
+    fallback = pool or TIER_WORDS[Tier.T1]
+    return " ".join(str(rng.choice(fallback)) for _ in range(bars)), bars
 
 
 def _default_words() -> tuple[str, ...]:
@@ -128,15 +180,17 @@ class ArenaScreen(Screen[None]):
         "#death { height: 2; color: #FF2A2A; text-style: bold; }\n"
     )
 
-    def __init__(  # noqa: PLR0913 - seven explicit params per combat ruling
+    def __init__(  # noqa: PLR0913 - arena config is one flat tested surface
         self,
         initial_words: tuple[str, ...] = ("cat",),
         initial_boss: str | None = None,
-        app: App[None] | None = None,
+        app: TypeSurvivorsApp | None = None,
         *,
         spawn_enabled: bool = True,
         weak_keys: tuple[str, ...] = (),
         seed: int | None = None,
+        practice: bool = False,
+        checkpoint_dir: Path | None = None,
     ) -> None:
         """Seed the arena; tests inject words and disable the spawner."""
         super().__init__()
@@ -157,12 +211,15 @@ class ArenaScreen(Screen[None]):
                 distance=8.0,
             )
         self._arena: ArenaState = state
-        self._app_ref: App[None] | None = app
+        self._app_ref: TypeSurvivorsApp | None = app
         self._spawn_enabled: bool = spawn_enabled
         self._weak_keys: tuple[str, ...] = weak_keys
         self._rng: random.Random = random.Random(seed)  # noqa: S311 - gameplay RNG
         self._boss_sentences: set[str] = set()
         self.paused: bool = False
+        self._practice: bool = practice
+        self._checkpoint_dir: Path | None = checkpoint_dir
+        self._run_clock: float = 0.0
         self.mono: bool = not colors_enabled()
         self._clock: float = 0.0
         self._wave_clock: float = 0.0
@@ -200,6 +257,30 @@ class ArenaScreen(Screen[None]):
     def stun_visible(self) -> bool:
         """Whether the typo gun-jam flag is currently shown."""
         return self.query_one("#stun", Label).display
+
+    @property
+    def hits(self) -> int:
+        """Correct keypresses this run (feeds the recap accuracy)."""
+        return self._hits
+
+    @property
+    def presses(self) -> int:
+        """Total keypresses this run (feeds the recap accuracy)."""
+        return self._presses
+
+    @property
+    def killer(self) -> str | None:
+        """Word that dealt the killing leak, if the run is over."""
+        return self._killer
+
+    @property
+    def clock(self) -> float:
+        """Seconds survived this run (feeds the recap duration)."""
+        return self._run_clock
+
+    def set_restored(self, state: ArenaState) -> None:
+        """Replace the live arena with a checkpoint-restored snapshot."""
+        self._arena = state
 
     @override
     def compose(self) -> ComposeResult:
@@ -243,8 +324,11 @@ class ArenaScreen(Screen[None]):
         """Advance movement, leaks, waves, and spawns (pause/death gate it)."""
         if self.paused or self._arena.hp <= 0.0:
             return
-        state, leaked = advance(self._arena, dt)
-        self._arena = state
+        self._run_clock += dt
+        if self._practice:
+            self._arena, leaked = practice_advance(self._arena, dt)
+        else:
+            self._arena, leaked = advance(self._arena, dt)
         if leaked:
             self._killer = leaked[0]
             self._refresh()
@@ -274,24 +358,24 @@ class ArenaScreen(Screen[None]):
         self.tick()
 
     def _spawn_foe(self) -> None:
-        """Spawn foes: grammar boss bars on boss waves, tier words otherwise."""
+        """Spawn foes: one multi-bar boss per boss wave, tier words otherwise."""
         shown = [str(foe.word.text) for foe in self._arena.enemies]
         if self._arena.wave % BOSS_EVERY == 0 and not self._arena.boss_wave:
             self._arena = set_boss_wave(self._arena, flag=True)
             rank = max(1, self._arena.wave // BOSS_EVERY)
-            sentence = generate_boss_sentence(
+            text, bars = boss_word_text(
                 rank,
                 self._boss_sentences,
                 self._rng,
                 self._weak_keys,
             )
-            for chunk in chunk_boss_sentence(sentence)[: 2 + rank]:
-                self._arena = spawn_enemy(
-                    self._arena,
-                    Word(text=WordText(chunk), tier=Tier.T3),
-                    kind=EnemyKind.BOSS,
-                    distance=8.0,
-                )
+            self._arena = spawn_enemy(
+                self._arena,
+                Word(text=WordText(text), tier=Tier.T3),
+                kind=EnemyKind.BOSS,
+                hp_words=bars,
+                distance=8.0,
+            )
             return
         tier = Tier.T1 if self._arena.wave <= 1 else Tier.T2
         word = pick_word(tier, (), shown, weak_keys=self._weak_keys)
@@ -305,23 +389,7 @@ class ArenaScreen(Screen[None]):
             self._arena = clear_lock(self._arena)
             self._refresh()
             return
-        if ch is None:
-            return
-        if ch == "P" and (self.paused or not self._expects_upper_p()):
-            self.paused = not self.paused
-            self._refresh()
-            return
-        if self.paused or len(ch) != 1 or not ch.isprintable():
-            return
-        if self._arena.hp <= 0.0:
-            if ch == "r" and self._app_ref is not None:
-                _ = self._app_ref.push_screen(
-                    ReportScreen(
-                        score=int(self._arena.score),
-                        kills=self._arena.kills,
-                        wave=self._arena.wave,
-                    ),
-                )
+        if ch is None or self._handle_command_key(ch):
             return
         if is_narrow(self.size.width):
             return
@@ -338,6 +406,24 @@ class ArenaScreen(Screen[None]):
             self._hits += 1
         self._refresh()
 
+    def _handle_command_key(self, ch: str) -> bool:
+        """Pause, suspend, and death-recap keys; True when fully handled."""
+        if ch == "P" and (self.paused or not self._expects_upper_p()):
+            self.paused = not self.paused
+            self._refresh()
+            return True
+        if self.paused:
+            if ch == "S":
+                self._suspend()
+            return True
+        if len(ch) != 1 or not ch.isprintable():
+            return True
+        if self._arena.hp <= 0.0:
+            if ch == "r" and self._app_ref is not None:
+                _ = self._app_ref.push_screen(self._app_ref.report_screen())
+            return True
+        return False
+
     def _expects_upper_p(self) -> bool:
         """Report whether the live lock next expects a literal 'P'."""
         current = self._arena.current
@@ -348,6 +434,12 @@ class ArenaScreen(Screen[None]):
             return False
         raw = str(foe.word.text)
         return self._arena.typed < len(raw) and raw[self._arena.typed] == "P"
+
+    def _suspend(self) -> None:
+        """Write the wave-start snapshot so resume restores it on launch."""
+        if self._checkpoint_dir is None:
+            return
+        save_checkpoint(self._checkpoint_dir, snapshot(self._arena))
 
     def _resolve_drop(self, before: ArenaState, target: EnemyId) -> None:
         """Roll the drop table for a kill and auto-apply the pickup."""
@@ -432,14 +524,30 @@ class ArenaScreen(Screen[None]):
 
 
 class ReportScreen(Screen[None]):
-    """Post-run report card: the second and only other screen."""
+    """Post-run recap card: tallies plus S for shop, Q back to the arena."""
 
-    def __init__(self, score: int, kills: int, wave: int) -> None:
-        """Snapshot the run tallies for the report card."""
+    CSS: ClassVar[str] = (
+        "Screen { background: #0B0B12; color: #CACACA; }\n"
+        "#report-card { height: 6; }\n"
+        "#report-hint { height: 1; color: #952CF5; }\n"
+    )
+
+    def __init__(
+        self,
+        score: int,
+        kills: int,
+        wave: int,
+        *,
+        card: str = "",
+        app: TypeSurvivorsApp | None = None,
+    ) -> None:
+        """Snapshot the run tallies; the app link powers S/Q navigation."""
         super().__init__()
         self._score: int = score
         self._kills: int = kills
         self._wave: int = wave
+        self._card: str = card
+        self._app_ref: TypeSurvivorsApp | None = app
 
     @property
     def score_line(self) -> str:
@@ -458,21 +566,199 @@ class ReportScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Tallies plus a hint back to the arena."""
+        """Tallies, the recap card, and the S/Q hint."""
         yield Label(self.score_line, id="report-score")
         yield Label(self.kills_line, id="report-kills")
         yield Label(self.wave_line, id="report-wave")
-        yield Label("press Q to return", id="report-hint")
+        yield Label(self._card, id="report-card")
+        yield Label("S shop  Q back to arena", id="report-hint")
 
-    def on_key(self, _event: events.Key) -> None:
-        """Any key returns to the arena screen."""
-        _ = self.dismiss(None)
+    async def on_key(self, event: events.Key) -> None:
+        """S detours to the shop; Q restarts back on the arena."""
+        if self._app_ref is None:
+            return
+        if event.key == "s":
+            self._app_ref.open_shop()
+        elif event.key == "q":
+            self._app_ref.return_to_arena()
+
+
+class HubScreen(Screen[None]):
+    """Blood Neon Void menu: start, practice, resume, shop, settings."""
+
+    CSS: ClassVar[str] = (
+        "Screen { background: #0B0B12; color: #CACACA; }\n"
+        "#title { color: #FF2A2A; text-style: bold; }\n"
+        "#subtitle { color: #952CF5; }\n"
+        "#gold { color: #FFD23F; text-style: bold; }\n"
+        "#hub-message { height: 1; color: #FFD23F; }\n"
+        "#hub-hint { color: #24AEEB; }\n"
+    )
+
+    def __init__(self, app: TypeSurvivorsApp) -> None:
+        """Hold the app link; every menu key delegates to one app method."""
+        super().__init__()
+        self._app_ref: TypeSurvivorsApp = app
+
+    @override
+    def compose(self) -> ComposeResult:
+        """Title, wallet, menu verbs, and the key hint."""
+        yield Label("TYPE SURVIVORS", id="title")
+        yield Label("type fast or be eaten by the void", id="subtitle")
+        yield Label(f"gold {self._app_ref.profile.gold}", id="gold")
+        yield Label("", id="hub-message")
+        yield Label(
+            "S start  P practice  R resume  H shop  E settings  Q quit",
+            id="hub-hint",
+        )
+
+    async def on_key(self, event: events.Key) -> None:
+        """Route one menu keypress to its app navigation method."""
+        match event.key:
+            case "s":
+                self._app_ref.start_run()
+            case "p":
+                self._app_ref.start_run(practice=True)
+            case "r":
+                if not self._app_ref.resume_run():
+                    self.query_one("#hub-message", Label).update(
+                        "no suspended run — start a fresh one",
+                    )
+            case "h":
+                self._app_ref.open_shop()
+            case "e":
+                self._app_ref.open_settings()
+            case "q":
+                self._app_ref.exit()
+            case _:
+                return
+
+
+class ShopScreen(Screen[None]):
+    """Meta shop: number keys buy permanent perks, then return to arena."""
+
+    CSS: ClassVar[str] = (
+        "Screen { background: #0B0B12; color: #CACACA; }\n"
+        "#shop-gold { color: #FFD23F; text-style: bold; }\n"
+        "#shop-message { height: 1; color: #FF2A2A; }\n"
+        "#shop-hint { color: #24AEEB; }\n"
+    )
+
+    def __init__(self, profile: Profile, app: TypeSurvivorsApp) -> None:
+        """Snapshot the wallet; buys write back through the app."""
+        super().__init__()
+        self._profile: Profile = profile
+        self._app_ref: TypeSurvivorsApp = app
+
+    @property
+    def profile(self) -> Profile:
+        """Current wallet snapshot (tests read owned perks through this)."""
+        return self._profile
+
+    @override
+    def compose(self) -> ComposeResult:
+        """Wallet, one numbered row per catalog perk, and the key hint."""
+        yield Label(f"gold {self._profile.gold}", id="shop-gold")
+        for index, item in enumerate(SHOP_CATALOG, start=1):
+            owned = "OWNED" if item.id in self._profile.shop else f"{item.price}g"
+            yield Label(f"{index} {item.name} — {owned}", id=f"shop-item-{index}")
+        yield Label("", id="shop-message")
+        yield Label(
+            "1-3 buy and return to arena  Q back without buying",
+            id="shop-hint",
+        )
+
+    async def on_key(self, event: events.Key) -> None:
+        """Buy keys purchase and restart; Q leaves without buying."""
+        if event.key == "q":
+            _ = self._app_ref.pop_screen()
+            return
+        if event.key not in ("1", "2", "3"):
+            return
+        item = SHOP_CATALOG[int(event.key) - 1]
+        try:
+            bought = buy_item(self._profile, item.id)
+        except ShopError as exc:
+            self.query_one("#shop-message", Label).update(str(exc))
+            return
+        self._profile = bought
+        self._app_ref.apply_profile(bought)
+        self._app_ref.return_to_arena()
+
+
+class SettingsScreen(Screen[None]):
+    """Shell toggles: palette cycle plus sound/bold/shake switches."""
+
+    CSS: ClassVar[str] = (
+        "Screen { background: #0B0B12; color: #CACACA; }\n"
+        "#settings-gold { color: #FFD23F; text-style: bold; }\n"
+        "#settings-rows { height: 5; }\n"
+        "#settings-hint { color: #24AEEB; }\n"
+    )
+
+    def __init__(self, profile: Profile, app: TypeSurvivorsApp) -> None:
+        """Snapshot the settings; toggles write back through the app."""
+        super().__init__()
+        self._profile: Profile = profile
+        self._app_ref: TypeSurvivorsApp = app
+
+    @override
+    def compose(self) -> ComposeResult:
+        """Render the current toggle values plus the key hint."""
+        yield Label(f"gold {self._profile.gold}", id="settings-gold")
+        yield Label(self._rows(), id="settings-rows")
+        yield Label("P palette  S sound  B bold  K shake  Q back", id="settings-hint")
+
+    def _rows(self) -> str:
+        """Render the four toggle values as one multi-line label."""
+        settings = self._profile.settings
+        sound = "on" if settings.sound_on else "off"
+        bold = "on" if settings.bold else "off"
+        shake = "on" if settings.shake else "off"
+        return (
+            f"palette {settings.palette.value}\nsound {sound}\n"
+            f"bold {bold}\nshake {shake}"
+        )
+
+    def _apply(self, profile: Profile) -> None:
+        """Write toggles back and repaint the rows."""
+        self._profile = profile
+        self._app_ref.apply_profile(profile)
+        self.query_one("#settings-rows", Label).update(self._rows())
+
+    async def on_key(self, event: events.Key) -> None:
+        """Route one toggle keypress to its settings update."""
+        settings = self._profile.settings
+        match event.key:
+            case "p":
+                self._apply(
+                    update_settings(
+                        self._profile,
+                        palette=next_palette(settings.palette),
+                    ),
+                )
+            case "s":
+                self._apply(
+                    update_settings(self._profile, sound_on=not settings.sound_on),
+                )
+            case "b":
+                self._apply(
+                    update_settings(self._profile, bold=not settings.bold),
+                )
+            case "k":
+                self._apply(
+                    update_settings(self._profile, shake=not settings.shake),
+                )
+            case "q":
+                _ = self._app_ref.pop_screen()
+            case _:
+                return
 
 
 class TypeSurvivorsApp(App[None]):
-    """Application root: pushes the arena and owns shared styling."""
+    """Application root: hub menu entry, arena pushes, shared styling."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - app config is one flat tested surface
         self,
         initial_words: tuple[str, ...] | None = None,
         initial_boss: str | None = None,
@@ -480,6 +766,10 @@ class TypeSurvivorsApp(App[None]):
         spawn_enabled: bool = True,
         weak_keys: tuple[str, ...] = (),
         seed: int | None = None,
+        profile: Profile | None = None,
+        profile_dir: Path | None = None,
+        start_at_hub: bool = False,
+        resume: bool = False,
     ) -> None:
         """Configure the opening deal; live runs generate their own words."""
         super().__init__()
@@ -491,16 +781,111 @@ class TypeSurvivorsApp(App[None]):
         self._spawn_enabled: bool = spawn_enabled
         self._weak_keys: tuple[str, ...] = weak_keys
         self._seed: int | None = seed
+        self._profile: Profile = profile if profile is not None else Profile()
+        self._profile_dir: Path | None = profile_dir
+        self._start_at_hub: bool = start_at_hub
+        self._resume: bool = resume
+
+    @property
+    def profile(self) -> Profile:
+        """Current player profile (shop/settings write back through this)."""
+        return self._profile
+
+    def apply_profile(self, profile: Profile) -> None:
+        """Replace the profile after a shop or settings write."""
+        self._profile = profile
+
+    def start_run(self, *, practice: bool = False) -> None:
+        """Push a fresh arena (practice pins HP via the no-death tick)."""
+        _ = self.push_screen(self._build_arena(practice=practice))
+
+    def report_screen(self) -> ReportScreen:
+        """Build the death recap card for the live arena tallies."""
+        arena = self._live_arena()
+        state = arena.arena_state
+        accuracy = arena.hits / arena.presses if arena.presses else 1.0
+        card = render_report(
+            RunSummary(
+                accuracy=accuracy,
+                kills=state.kills,
+                wave=state.wave,
+                score=int(state.score),
+                duration_s=arena.clock,
+            ),
+            killer=arena.killer,
+        )
+        return ReportScreen(
+            score=int(state.score),
+            kills=state.kills,
+            wave=state.wave,
+            card=card,
+            app=self,
+        )
+
+    def open_shop(self) -> None:
+        """Push the meta shop over the current screen."""
+        _ = self.push_screen(ShopScreen(self._profile, self))
+
+    def open_settings(self) -> None:
+        """Push the shell toggles over the current screen."""
+        _ = self.push_screen(SettingsScreen(self._profile, self))
+
+    def resume_run(self) -> bool:
+        """Push a checkpoint-restored arena; False when none is saved."""
+        if self._profile_dir is None:
+            return False
+        try:
+            checkpoint = load_checkpoint(self._profile_dir)
+        except CheckpointError:
+            return False
+        _ = self.push_screen(self._build_arena(state=restore(checkpoint)))
+        return True
+
+    def return_to_arena(self) -> None:
+        """Pop back to the arena, pushing a fresh one when hub is below."""
+        while len(self.screen_stack) > 1 and not isinstance(self.screen, ArenaScreen):
+            _ = self.pop_screen()
+        if not isinstance(self.screen, ArenaScreen):
+            self.start_run()
+
+    def _live_arena(self) -> ArenaScreen:
+        """Return the arena screen, assuming one is on the stack."""
+        screen = self.screen
+        if not isinstance(screen, ArenaScreen):
+            msg = "report card needs a live arena below it"
+            raise TypeError(msg)
+        return screen
+
+    def _build_arena(
+        self,
+        *,
+        state: ArenaState | None = None,
+        practice: bool = False,
+    ) -> ArenaScreen:
+        """Build an arena with the app config, optionally checkpoint-restored."""
+        screen = ArenaScreen(
+            initial_words=self._initial_words,
+            initial_boss=self._initial_boss,
+            app=self,
+            spawn_enabled=self._spawn_enabled,
+            weak_keys=self._weak_keys,
+            seed=self._seed,
+            practice=practice,
+            checkpoint_dir=self._profile_dir,
+        )
+        if state is not None:
+            screen.set_restored(state)
+        return screen
 
     def on_mount(self) -> None:
-        """Push the one and only arena screen."""
-        _ = self.push_screen(
-            ArenaScreen(
-                initial_words=self._initial_words,
-                initial_boss=self._initial_boss,
-                app=self,
-                spawn_enabled=self._spawn_enabled,
-                weak_keys=self._weak_keys,
-                seed=self._seed,
-            ),
-        )
+        """Push the hub menu, or the arena (checkpoint-restored on resume)."""
+        if self._start_at_hub:
+            _ = self.push_screen(HubScreen(self))
+            return
+        state: ArenaState | None = None
+        if self._resume and self._profile_dir is not None:
+            try:
+                state = restore(load_checkpoint(self._profile_dir))
+            except CheckpointError:
+                state = None
+        _ = self.push_screen(self._build_arena(state=state))

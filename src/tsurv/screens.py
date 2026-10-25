@@ -100,7 +100,7 @@ _COMMAND_WORDS: Final[dict[str, ShellCommand]] = {
 }
 
 HELP_TEXT: Final = """commands: /start /practice /resume /shop /settings /help /quit
-keys: type to kill, P pause, Esc unlock, R recap after death, Q back to arena"""
+keys: type to kill, P pause, S suspend, R recap after death, Q arena"""
 
 
 def parse_command(text: str) -> ShellCommand:
@@ -128,11 +128,10 @@ def describe(command: ShellCommand) -> str:
             line = "/settings — palette, sound, bold, shake"
         case ShellCommand.RESUME:
             line = "/resume — restore the suspended checkpoint wave"
-        case _ as other:
-            if other is ShellCommand.UNKNOWN:
-                line = "unknown command — try /help"
-            else:
-                assert_never(other)
+        case ShellCommand.UNKNOWN:
+            line = "unknown command — try /help"
+        case _:
+            assert_never(command)
     return line
 
 
@@ -208,10 +207,10 @@ def next_palette(palette: Palette) -> Palette:
             return Palette.DEUTAN
         case Palette.DEUTAN:
             return Palette.TRITAN
-        case _ as other:
-            if other is Palette.TRITAN:
-                return Palette.STANDARD
-            assert_never(other)
+        case Palette.TRITAN:
+            return Palette.STANDARD
+        case _:
+            assert_never(palette)
 
 
 def corruption_for_rank(rank: int) -> Corruption:
