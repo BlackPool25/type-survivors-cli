@@ -219,6 +219,67 @@ def foe_mark(kind: EnemyKind, corruption: Corruption) -> str:
             assert_never(kind)
 
 
+_ELITE_RING: Final = "◯"
+"""Elite ring: a large circle worn around the tier circle."""
+
+_BOSS_CROWN: Final = "♛"
+"""Boss crown: worn above the art, red in color, shape alone in mono."""
+
+_BOSS_CROWN_COLOR: Final = "#FF2A2A"
+"""Crown red: matches the boss body color."""
+
+
+@dataclass(frozen=True, slots=True)
+class Marker:
+    """Circle tier marker: tinted circle, elite ring, boss crown above.
+
+    The circle phase encodes the tier so shape alone separates tiers in
+    mono; color is None exactly when mono strips the tint.
+    """
+
+    glyph: str
+    color: str | None
+    ring: str
+    crown: str
+    crown_color: str | None
+
+
+def marker(
+    kind: EnemyKind,
+    tier: Tier,
+    *,
+    elite: bool,
+    boss: bool,
+    mono: bool,
+) -> Marker:
+    """Circle marker for a foe: tier circle, elite ring, boss crown above.
+
+    The ring rides the tier tint; the crown is always boss red. Kind
+    backstops the flags so ELITE/BOSS foes wear their marks regardless.
+    """
+    match tier:
+        case Tier.T1:
+            glyph, color = "○", "#24AEEB"
+        case Tier.T2:
+            glyph, color = "◔", "#39FF6A"
+        case Tier.T3:
+            glyph, color = "◑", "#FFD23F"
+        case Tier.CODE:
+            glyph, color = "◕", "#B57CFF"
+        case Tier.BOSS:
+            glyph, color = "◉", "#FF2A2A"
+        case _:
+            assert_never(tier)
+    crowned = boss or kind is EnemyKind.BOSS
+    return Marker(
+        glyph=glyph,
+        color=None if mono else color,
+        ring=_ELITE_RING if (elite or kind is EnemyKind.ELITE) else "",
+        crown=_BOSS_CROWN if crowned else "",
+        crown_color=None if (mono or not crowned) else _BOSS_CROWN_COLOR,
+    )
+
+
 def foe_plate_text(
     word: str,
     *,
