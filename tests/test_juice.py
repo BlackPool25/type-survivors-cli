@@ -18,6 +18,8 @@ from tsurv.app import BOSS_EVERY, WAVE_SECONDS, ArenaScreen, TypeSurvivorsApp
 from tsurv.arena import EnemyKind, seconds_to_impact
 from tsurv.combat import SHIELD_STREAK_EVERY
 from tsurv.juice import (
+    BLOOD_PALETTE,
+    DISINTEGRATE_S,
     HIT_STOP_S,
     LOW_HP_FRACTION,
     PARTICLE_BURST,
@@ -27,6 +29,7 @@ from tsurv.juice import (
     JuiceState,
     Seconds,
     apply_calibration,
+    burst,
     calibrate_base_wpm,
     is_bar_break,
     low_hp,
@@ -206,6 +209,7 @@ def test_pilot_bar_burn_freezes_tick() -> None:
             assert screen.arena_state.enemies[0].distance == held
             await asyncio.sleep(_HIT_STOP_WAIT)
             assert not screen.hit_stop_active
+            screen.end_spectacle()
             screen.tick(0.01)
             assert screen.arena_state.enemies[0].distance < held
 
@@ -277,6 +281,7 @@ def test_pilot_wave5_boss_full_playthrough() -> None:
             foe = screen.arena_state.enemies[0]
             assert foe.kind is EnemyKind.BOSS
             assert foe.hp_words == _RANK1_BARS
+            screen.end_spectacle()
             raw = str(foe.word.text)
             assert raw
             for bar in range(_RANK1_BARS, 0, -1):
@@ -292,5 +297,70 @@ def test_pilot_wave5_boss_full_playthrough() -> None:
             screen.tick(1.0)
             assert screen.arena_state.wave == BOSS_EVERY + 1
             assert not screen.arena_state.boss_wave
+
+    asyncio.run(_scenario())
+
+
+_KILL_X: Final = 3.0
+_KILL_Y: Final = -2.0
+_DISINTEGRATE_WINDOW: Final = 0.3
+
+
+def test_kill_spawns_blood_burst() -> None:
+    """A kill bursts 12 motes at the foe, palette yellow then red then black."""
+    motes = burst(_KILL_X, _KILL_Y)
+    assert len(motes) == PARTICLE_BURST
+    assert [mote.color for mote in motes[:3]] == list(BLOOD_PALETTE)
+    assert BLOOD_PALETTE == ("#FFD23F", "#FF2A2A", "#000000")
+    assert all(mote.life <= DISINTEGRATE_S for mote in motes)
+    assert DISINTEGRATE_S == _DISINTEGRATE_WINDOW
+    mean_x = sum(mote.x for mote in motes) / len(motes)
+    mean_y = sum(mote.y for mote in motes) / len(motes)
+    assert mean_x == _KILL_X
+    assert mean_y == _KILL_Y
+    half = step_juice(JuiceState(particles=motes), DISINTEGRATE_S / 2)
+    assert half.particles
+    assert all(mote.size < 1.0 for mote in half.particles)
+    gone = step_juice(JuiceState(particles=motes), DISINTEGRATE_S)
+    assert gone.particles == ()
+
+
+def test_trigger_kill_emits_blood_burst() -> None:
+    """Plain grunt kills rattle and leave a blood burst behind."""
+    effect = trigger_kill(JuiceState(), 1, _NOW)
+    assert len(effect.particles) == PARTICLE_BURST
+    assert [mote.color for mote in effect.particles[:3]] == list(BLOOD_PALETTE)
+
+
+def test_boss_banner_freezes_timers() -> None:
+    """Sim clocks hold still across the 2.5s banner; typing stays live."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(
+            initial_words=(),
+            initial_boss="overlord",
+            spawn_enabled=False,
+            seed=_SEED,
+        )
+        async with app.run_test() as pilot:
+            del pilot
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            assert screen.spectacle_active
+            assert screen.boss_banner_text.startswith("OVERLORD APPROACHES")
+            clock = screen.clock
+            assert screen.arena_state.enemies
+            held = screen.arena_state.enemies[0].distance
+            screen.tick(0.5)
+            assert screen.clock == clock
+            assert screen.arena_state.enemies[0].distance == held
+            foe = screen.arena_state.enemies[0]
+            first = str(foe.word.text)[0]
+            await screen.on_key(events.Key(first, first))
+            assert screen.arena_state.typed == 1
+            assert screen.clock == clock
+            screen.end_spectacle()
+            screen.tick(0.5)
+            assert screen.clock > clock
 
     asyncio.run(_scenario())

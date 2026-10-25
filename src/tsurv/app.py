@@ -400,6 +400,7 @@ class ArenaScreen(Screen[None]):
         self._spawned_at: dict[EnemyId, float] = {}
         self._rng: random.Random = random.Random(seed)  # noqa: S311 - gameplay RNG
         self._juice: JuiceState = JuiceState()
+        self._boss_banner_until: float = 0.0
         state = initial_arena(hp=_START_HP)
         for text in initial_words:
             state = spawn_enemy(
@@ -444,7 +445,6 @@ class ArenaScreen(Screen[None]):
         ]
         self._pick: RendererPick = probe_renderer()
         self._last_wave: int = state.wave
-        self._boss_banner_until: float = 0.0
         self._advance_until: float = 0.0
         self._drift_until: float = 0.0
 
@@ -554,6 +554,15 @@ class ArenaScreen(Screen[None]):
     def hit_stop_active(self) -> bool:
         """Whether bar-break hit-stop currently freezes the sim."""
         return self._juice.frozen_at(time.monotonic())
+
+    @property
+    def spectacle_active(self) -> bool:
+        """Whether the boss banner holds sim time (spawn/impact clocks stop)."""
+        return time.monotonic() < self._boss_banner_until
+
+    def end_spectacle(self) -> None:
+        """Dismiss the boss-entrance banner early so sim clocks resume."""
+        self._boss_banner_until = 0.0
 
     @property
     def knockback_active(self) -> bool:
@@ -669,7 +678,8 @@ class ArenaScreen(Screen[None]):
         if self.paused or self._arena.hp <= 0.0:
             return
         self._juice = step_juice(self._juice, dt)
-        if self._juice.frozen_at(time.monotonic()):
+        if self.spectacle_active or self._juice.frozen_at(time.monotonic()):
+            # Boss entrance and hit-stop: overlay only, sim clocks hold.
             self._refresh()
             return
         now = time.monotonic()
@@ -1372,6 +1382,14 @@ class HubScreen(Screen[None]):
         self._refresh_hub()
         if self._app_ref.claim_hub_intro():
             self._play_decrypt()
+
+    def on_resize(self, _event: events.Resize) -> None:
+        """Re-bake the logo so a resized hub keeps the column fitting."""
+        for widget in self.query("#hub-logo"):
+            if isinstance(widget, Label):
+                widget.update(
+                    _hub_logo_text(_hub_logo_cells(self.size.height)),
+                )
 
     def _play_decrypt(self) -> None:
         """Glitch the subtitle in via TTE; the task yields so keys stay live."""

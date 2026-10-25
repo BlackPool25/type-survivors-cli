@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from itertools import pairwise
+from math import cos, pi, sin
 from typing import TYPE_CHECKING, Final, NewType, assert_never
 
 from tsurv.arena import EnemyKind
@@ -31,17 +32,23 @@ LOW_HP_FRACTION: Final = 0.3  # chosen: pulse at/below 30% vitals
 TRAUMA_DECAY_PER_S: Final = 1.0  # chosen: full trauma clears in one quiet second
 TRAUMA_KILL: Final = 0.3  # chosen: three rattles stack to a full shake
 PARTICLE_BURST: Final = 12  # chosen: one ring of twelve motes per bar break
+BLOOD_PALETTE: Final = ("#FFD23F", "#FF2A2A", "#000000")
+"""Kill-burst order: gold flash, boss red, void black (mono keeps the glyphs)."""
+DISINTEGRATE_S: Final = 0.3
+"""Disintegration window: kills shrink and fade over exactly 300ms."""
 
 
 @dataclass(frozen=True, slots=True)
 class Particle:
-    """One knockback mote: position, velocity, remaining life in seconds."""
+    """One knockback mote: position, velocity, remaining life, blood tint."""
 
     x: float
     y: float
     vx: float
     vy: float
     life: float
+    color: str = BLOOD_PALETTE[0]
+    size: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,20 +99,48 @@ def is_bar_break(kind: EnemyKind, hp_words: int) -> bool:
     return hp_words > 1 or kind is EnemyKind.BOSS
 
 
+def burst(
+    x: float = 0.0,
+    y: float = 0.0,
+    count: int = PARTICLE_BURST,
+    palette: tuple[str, ...] = BLOOD_PALETTE,
+) -> tuple[Particle, ...]:
+    """Emit a deterministic blood ring at the kill site in palette order."""
+    ring = palette or BLOOD_PALETTE
+    if count <= 0:
+        return ()
+    speed = 2.0
+    return tuple(
+        Particle(
+            x=x,
+            y=y,
+            vx=speed * cos(2.0 * pi * index / count),
+            vy=speed * sin(2.0 * pi * index / count),
+            life=DISINTEGRATE_S,
+            color=ring[index % len(ring)],
+            size=1.0,
+        )
+        for index in range(count)
+    )
+
+
 def spawn_burst(
     rng: random.Random,
     count: int = PARTICLE_BURST,
 ) -> tuple[Particle, ...]:
     """Emit one ring of short-lived motes for a bar break."""
+    ring = BLOOD_PALETTE
     return tuple(
         Particle(
             x=0.0,
             y=0.0,
             vx=rng.uniform(-2.0, 2.0),
             vy=rng.uniform(-2.0, 2.0),
-            life=rng.uniform(0.25, 0.6),
+            life=rng.uniform(0.2, DISINTEGRATE_S),
+            color=ring[index % len(ring)],
+            size=1.0,
         )
-        for _ in range(count)
+        for index in range(count)
     )
 
 
@@ -136,6 +171,7 @@ def trigger_kill(state: JuiceState, streak_after: int, now: float) -> JuiceState
         state,
         slow_mo_until=slow_mo_until,
         trauma=min(1.0, state.trauma + TRAUMA_KILL),
+        particles=burst(),
     )
 
 
@@ -148,6 +184,8 @@ def step_juice(state: JuiceState, dt: float) -> JuiceState:
             vx=mote.vx,
             vy=mote.vy,
             life=mote.life - dt,
+            color=mote.color,
+            size=max(0.0, min(1.0, (mote.life - dt) / DISINTEGRATE_S)),
         )
         for mote in state.particles
         if mote.life - dt > 0.0
