@@ -1,0 +1,13 @@
+/* Blood Neon Void — HUB + menus */
+$void: #0B0B12; $panel: #151522; $bone: #CACACA;
+$hp: #39FF6A; $warn: #FFD23F; $blood: #FF2A2A;
+$grunt: #952CF5; $split: #FF7A00; $elite: #24AEEB; $gold: #FFD23F;
+
+Screen { background: $void; color: $bone; }
+#title { color: $blood; text-style: bold; }
+#subtitle { color: $grunt; }
+Menu Button { background: $panel; color: $bone; border: solid $grunt; }
+Menu Button:focus { background: $grunt; color: #FFFFFF; }
+#hiscore { color: $gold; } #gold { color: $gold; text-style: bold; }
+#hpbar { color: $hp; } #bossbar { color: $blood; }
+TypingLine { background: $panel; } .typed { color: $hp; } .next { text-style: underline; color: $gold; }
