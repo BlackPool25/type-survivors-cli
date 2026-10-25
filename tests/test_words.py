@@ -1,11 +1,15 @@
 """Tests for the pure word-selection engine (tiers, constraints, swear filter)."""
 
+from __future__ import annotations
+
+import importlib
 from pathlib import Path
 from typing import Final, TypedDict
 
 import pytest
 from pydantic import TypeAdapter
 
+from tsurv import words
 from tsurv.words import (
     TIER_WORDS,
     Tier,
@@ -199,3 +203,40 @@ def test_chunk_non_ascii_raises() -> None:
         _ = chunk_boss_sentence("\u201chello\u201d")
     with pytest.raises(WordSelectionError, match="typeable ASCII"):
         _ = chunk_boss_sentence("caf\u00e9")
+
+
+def test_broken_word_file_error_names_tier_and_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing or malformed word files raise naming the tier and filename."""
+    real_validate = _WORD_FILE_ADAPTER.validate_json
+
+    def _no_disk(*args: object, **kwargs: object) -> str:
+        """Simulate an unreadable word file."""
+        _ = (args, kwargs)
+        msg = "disk gone"
+        raise OSError(msg)
+
+    def _bad_json(*args: object, **kwargs: object) -> _WordFile:
+        """Simulate a malformed word file via the real validator."""
+        _ = (args, kwargs)
+        return real_validate("not json")
+
+    def _expect_load_error(label: str) -> None:
+        """Reload with broken I/O; the error must name the tier and file."""
+        try:
+            _ = importlib.reload(words)
+        except words.WordSelectionError as exc:
+            error = str(exc)
+        else:
+            pytest.fail("broken word file should raise")
+        finally:
+            monkeypatch.undo()
+            _ = importlib.reload(words)
+        assert label in error
+        assert "english_1k.json" in error
+
+    monkeypatch.setattr(Path, "read_text", _no_disk)
+    _expect_load_error("T1")
+    monkeypatch.setattr(TypeAdapter, "validate_json", _bad_json)
+    _expect_load_error("T1")

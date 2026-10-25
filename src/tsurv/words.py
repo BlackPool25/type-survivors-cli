@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NewType, TypedDict, assert_never
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -97,10 +97,14 @@ class _WordFile(TypedDict):
 _WORD_FILE_ADAPTER: Final = TypeAdapter(_WordFile)
 
 
-def _load_words(filename: str) -> tuple[WordText, ...]:
+def _load_words(tier: Tier, filename: str) -> tuple[WordText, ...]:
     """Load a local word-list JSON file, deduplicated, order preserved."""
-    text = (_WORDS_DIR / filename).read_text(encoding="utf-8")
-    words = _WORD_FILE_ADAPTER.validate_json(text)["words"]
+    try:
+        text = (_WORDS_DIR / filename).read_text(encoding="utf-8")
+        words = _WORD_FILE_ADAPTER.validate_json(text)["words"]
+    except (OSError, ValidationError) as exc:
+        msg = f"cannot load {tier.value} words from {filename}: {exc}"
+        raise WordSelectionError(msg) from exc
     unique: list[WordText] = []
     seen: set[str] = set()
     for item in words:
@@ -122,19 +126,24 @@ def _dedupe(pool: tuple[WordText, ...]) -> tuple[WordText, ...]:
 
 _T1_POOL: Final = tuple(
     word
-    for word in _clean(_load_words("english_1k.json"))
+    for word in _clean(_load_words(Tier.T1, "english_1k.json"))
     if _T1_MIN_LEN <= len(word) <= _T1_MAX_LEN
 )
 _T2_POOL: Final = tuple(
     word
-    for word in _clean(_load_words("english_5k.json"))
+    for word in _clean(_load_words(Tier.T2, "english_5k.json"))
     if _T2_MIN_LEN <= len(word) <= _T2_MAX_LEN
 )
 _T3_POOL: Final = tuple(
-    word for word in _clean(_load_words("english_10k.json")) if len(word) >= _T3_MIN_LEN
+    word
+    for word in _clean(_load_words(Tier.T3, "english_10k.json"))
+    if len(word) >= _T3_MIN_LEN
 )
 _CODE_POOL: Final = _dedupe(
-    _clean(_load_words("code_python.json") + _load_words("code_javascript.json")),
+    _clean(
+        _load_words(Tier.CODE, "code_python.json")
+        + _load_words(Tier.CODE, "code_javascript.json"),
+    ),
 )
 
 # BOSS has no pool: boss words come only from chunk_boss_sentence pools.
