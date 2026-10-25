@@ -30,7 +30,8 @@ from tsurv.arena import (
     spawn_enemy,
 )
 from tsurv.combat import EnemyId, Kill, TypoStun, rolling_wpm, spawn_interval
-from tsurv.words import Tier, Word, WordText, pick_word
+from tsurv.grammar import generate_boss_sentence
+from tsurv.words import Tier, Word, WordText, chunk_boss_sentence, pick_word
 
 if TYPE_CHECKING:
     from textual import events
@@ -127,13 +128,15 @@ class ArenaScreen(Screen[None]):
         "#death { height: 2; color: #FF2A2A; text-style: bold; }\n"
     )
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - seven explicit params per combat ruling
         self,
         initial_words: tuple[str, ...] = ("cat",),
         initial_boss: str | None = None,
         app: App[None] | None = None,
         *,
         spawn_enabled: bool = True,
+        weak_keys: tuple[str, ...] = (),
+        seed: int | None = None,
     ) -> None:
         """Seed the arena; tests inject words and disable the spawner."""
         super().__init__()
@@ -156,6 +159,9 @@ class ArenaScreen(Screen[None]):
         self._arena: ArenaState = state
         self._app_ref: App[None] | None = app
         self._spawn_enabled: bool = spawn_enabled
+        self._weak_keys: tuple[str, ...] = weak_keys
+        self._rng: random.Random = random.Random(seed)  # noqa: S311 - gameplay RNG
+        self._boss_sentences: set[str] = set()
         self.paused: bool = False
         self.mono: bool = not colors_enabled()
         self._clock: float = 0.0
@@ -268,22 +274,27 @@ class ArenaScreen(Screen[None]):
         self.tick()
 
     def _spawn_foe(self) -> None:
-        """Spawn one foe: boss bars on boss waves, tier words otherwise."""
+        """Spawn foes: grammar boss bars on boss waves, tier words otherwise."""
         shown = [str(foe.word.text) for foe in self._arena.enemies]
         if self._arena.wave % BOSS_EVERY == 0 and not self._arena.boss_wave:
             self._arena = set_boss_wave(self._arena, flag=True)
-            chunk = pick_word(Tier.T3, (), shown)
-            # shortcut: boss bars reuse T1-T3 chunks until authored pools land.
-            self._arena = spawn_enemy(
-                self._arena,
-                chunk,
-                kind=EnemyKind.BOSS,
-                hp_words=2 + self._arena.wave // BOSS_EVERY,
-                distance=8.0,
+            rank = max(1, self._arena.wave // BOSS_EVERY)
+            sentence = generate_boss_sentence(
+                rank,
+                self._boss_sentences,
+                self._rng,
+                self._weak_keys,
             )
+            for chunk in chunk_boss_sentence(sentence)[: 2 + rank]:
+                self._arena = spawn_enemy(
+                    self._arena,
+                    Word(text=WordText(chunk), tier=Tier.T3),
+                    kind=EnemyKind.BOSS,
+                    distance=8.0,
+                )
             return
         tier = Tier.T1 if self._arena.wave <= 1 else Tier.T2
-        word = pick_word(tier, (), shown)
+        word = pick_word(tier, (), shown, weak_keys=self._weak_keys)
         kind = EnemyKind.GRUNT if len(shown) % 3 else EnemyKind.MITE
         self._arena = spawn_enemy(self._arena, word, kind=kind)
 
@@ -467,6 +478,8 @@ class TypeSurvivorsApp(App[None]):
         initial_boss: str | None = None,
         *,
         spawn_enabled: bool = True,
+        weak_keys: tuple[str, ...] = (),
+        seed: int | None = None,
     ) -> None:
         """Configure the opening deal; live runs generate their own words."""
         super().__init__()
@@ -476,6 +489,8 @@ class TypeSurvivorsApp(App[None]):
             self._initial_words = initial_words
         self._initial_boss: str | None = initial_boss
         self._spawn_enabled: bool = spawn_enabled
+        self._weak_keys: tuple[str, ...] = weak_keys
+        self._seed: int | None = seed
 
     def on_mount(self) -> None:
         """Push the one and only arena screen."""
@@ -485,5 +500,7 @@ class TypeSurvivorsApp(App[None]):
                 initial_boss=self._initial_boss,
                 app=self,
                 spawn_enabled=self._spawn_enabled,
+                weak_keys=self._weak_keys,
+                seed=self._seed,
             ),
         )

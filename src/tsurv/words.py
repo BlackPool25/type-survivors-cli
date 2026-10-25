@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 
 _WORDS_DIR: Final = Path(__file__).resolve().parent.parent.parent / "words"
 
+WEAK_KEY_BOOST: Final = 3
+"""Reweight factor for weak-key words: listed this often, never exclusively."""
+
 _T1_MIN_LEN: Final = 3
 _T1_MAX_LEN: Final = 5
 _T2_MIN_LEN: Final = 5
@@ -183,7 +186,38 @@ def chunk_boss_sentence(sentence: str) -> list[str]:
     return chunks
 
 
-def pick_word(tier: Tier, history: Sequence[str], on_screen: Sequence[str]) -> Word:
+def weak_hits(word: str, weak_keys: Sequence[str]) -> bool:
+    """Report whether a word contains any of the player's weak-key letters."""
+    lowered = word.lower()
+    return any(key.lower() in lowered for key in weak_keys if key)
+
+
+def reweight_for_weak_keys(
+    candidates: Sequence[WordText],
+    weak_keys: Sequence[str],
+) -> tuple[WordText, ...]:
+    """Bias a candidate pool toward weak-key words without ever excluding.
+
+    Weak-key words appear WEAK_KEY_BOOST times as often; every other
+    candidate stays eligible exactly once, so practice targets weak keys
+    while normal spawns can still surface anything.
+    """
+    if not weak_keys:
+        return tuple(candidates)
+    weak = tuple(word for word in candidates if weak_hits(str(word), weak_keys))
+    if not weak or len(weak) == len(candidates):
+        return tuple(candidates)
+    rest = tuple(word for word in candidates if not weak_hits(str(word), weak_keys))
+    return (*weak * WEAK_KEY_BOOST, *rest)
+
+
+def pick_word(
+    tier: Tier,
+    history: Sequence[str],
+    on_screen: Sequence[str],
+    *,
+    weak_keys: Sequence[str] = (),
+) -> Word:
     """Pick a random word for a tier honoring spawn constraints.
 
     Excludes words already on screen, words in the trailing 30 history
@@ -204,4 +238,5 @@ def pick_word(tier: Tier, history: Sequence[str], on_screen: Sequence[str]) -> W
     if not candidates:
         msg = f"no {tier.value} word satisfies spawn constraints"
         raise WordSelectionError(msg)
-    return Word(text=secrets.choice(candidates), tier=tier)
+    weighted = reweight_for_weak_keys(tuple(candidates), weak_keys)
+    return Word(text=secrets.choice(weighted), tier=tier)
