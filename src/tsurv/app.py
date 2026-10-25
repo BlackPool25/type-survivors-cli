@@ -111,6 +111,7 @@ from tsurv.visuals import (
     hub_list_text,
     juice_overlay,
     marker,
+    particle_layer,
     portal_mark,
     shop_row_text,
     sprite_path,
@@ -844,10 +845,10 @@ class ArenaScreen(Screen[None]):
         foe = next((item for item in before.enemies if item.id == outcome.target), None)
         if foe is None:
             return
+        x, y = world_xy(foe)
         if is_bar_break(foe.kind, foe.hp_words):
-            self._juice = trigger_bar_break(self._juice, now, self._rng)
+            self._juice = trigger_bar_break(self._juice, now, self._rng, x, y)
         else:
-            x, y = world_xy(foe)
             self._juice = trigger_kill(self._juice, outcome.streak, now, x, y)
 
     def _calibrate_wave(self) -> None:
@@ -1130,6 +1131,15 @@ class ArenaScreen(Screen[None]):
                     chip_y=chip_y,
                 ),
             )
+        sprites.extend(
+            particle_layer(
+                self._juice.particles,
+                width=width,
+                height=height,
+                mono=self.mono,
+                shake=shake,
+            ),
+        )
         self.query_one("#field", ArenaCanvas).set_field(
             render_field(width=width, height=height, sprites=tuple(sprites)),
         )

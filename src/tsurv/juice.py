@@ -127,13 +127,15 @@ def burst(
 def spawn_burst(
     rng: random.Random,
     count: int = PARTICLE_BURST,
+    x: float = 0.0,
+    y: float = 0.0,
 ) -> tuple[Particle, ...]:
     """Emit one ring of short-lived motes for a bar break."""
     ring = BLOOD_PALETTE
     return tuple(
         Particle(
-            x=0.0,
-            y=0.0,
+            x=x,
+            y=y,
             vx=rng.uniform(-2.0, 2.0),
             vy=rng.uniform(-2.0, 2.0),
             life=rng.uniform(0.2, DISINTEGRATE_S),
@@ -144,7 +146,13 @@ def spawn_burst(
     )
 
 
-def trigger_bar_break(state: JuiceState, now: float, rng: random.Random) -> JuiceState:
+def trigger_bar_break(
+    state: JuiceState,
+    now: float,
+    rng: random.Random,
+    x: float = 0.0,
+    y: float = 0.0,
+) -> JuiceState:
     """Raise knockback + hit-stop + flash, max trauma, burst particles.
 
     The knockback window intentionally equals the 80ms hit-stop: one blast,
@@ -158,7 +166,7 @@ def trigger_bar_break(state: JuiceState, now: float, rng: random.Random) -> Juic
         knockback_until=window,
         flash_until=window,
         trauma=1.0,
-        particles=spawn_burst(rng),
+        particles=spawn_burst(rng, x=x, y=y),
     )
 
 

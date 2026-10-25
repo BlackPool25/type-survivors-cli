@@ -17,7 +17,7 @@ from textual.widgets import Label
 
 from tsurv.app import BOSS_EVERY, ArenaScreen, HubScreen, TypeSurvivorsApp
 from tsurv.arena import EnemyKind
-from tsurv.juice import PARTICLE_BURST, JuiceState, trigger_bar_break
+from tsurv.juice import PARTICLE_BURST, JuiceState, burst, step_juice, trigger_bar_break
 from tsurv.profile import Profile
 from tsurv.stage import ArenaCanvas
 from tsurv.visuals import (
@@ -37,6 +37,7 @@ from tsurv.visuals import (
     hub_greeting,
     hub_list_text,
     juice_overlay,
+    particle_layer,
     portal_mark,
     shop_row_text,
     tier_pips,
@@ -660,3 +661,29 @@ def test_pilot_wave_clear_steps_core_forward() -> None:
             assert "ADVANCES" in plain
 
     asyncio.run(_scenario())
+
+
+_EAST_X: Final = 2.0
+_WEST_X: Final = -2.0
+_LAYER_W: Final = 40
+_LAYER_H: Final = 20
+_EAST_CELL: Final = (_LAYER_W // 2 + 4, _LAYER_H // 2)
+_WEST_CELL: Final = (_LAYER_W // 2 - 4, _LAYER_H // 2)
+
+
+def test_bursts_at_distinct_sites_paint_distinct_cells() -> None:
+    """Kills at different sites render at visibly different screen positions."""
+    east_burst = burst(_EAST_X, 0.0)
+    west_burst = burst(_WEST_X, 0.0)
+    east = particle_layer(east_burst, width=_LAYER_W, height=_LAYER_H, mono=True)
+    west = particle_layer(west_burst, width=_LAYER_W, height=_LAYER_H, mono=True)
+    assert {(mote.chip_x, mote.chip_y) for mote in east} == {_EAST_CELL}
+    assert {(mote.chip_x, mote.chip_y) for mote in west} == {_WEST_CELL}
+    tinted = particle_layer(east_burst, width=_LAYER_W, height=_LAYER_H, mono=False)
+    assert all(mote.chip.plain == "*" for mote in tinted)
+    assert all(len(mote.chip.spans) == 1 for mote in tinted)
+    assert tinted[0].chip.spans[0].style == "#FFD23F"
+    assert all(mote.chip.spans == [] for mote in east)
+    aged = step_juice(JuiceState(particles=east_burst), 0.2).particles
+    faded = particle_layer(aged, width=_LAYER_W, height=_LAYER_H, mono=True)
+    assert all(mote.chip.plain == "·" for mote in faded)

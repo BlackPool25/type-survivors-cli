@@ -15,10 +15,11 @@ from typing import TYPE_CHECKING, Final, assert_never
 from rich.text import Text
 
 from tsurv.arena import EnemyKind
+from tsurv.stage import FieldSprite, world_to_cell
 from tsurv.words import Corruption, Tier
 
 if TYPE_CHECKING:
-    from tsurv.juice import JuiceState
+    from tsurv.juice import JuiceState, Particle
 
 ASSETS_DIR: Final = Path(__file__).resolve().parent.parent.parent / "assets"
 """Repo sprite art: boss/grunt/mite/hex/core PNGs plus the void backdrop."""
@@ -49,6 +50,12 @@ _BURST_CELL: Final = "*"
 
 _SLOW_MARK: Final = "SLO-MO"
 """Slow-mo tint marker: text first, color never the only signal."""
+
+_FADE_CELL: Final = "·"
+"""Fading mote: small speck once size drops to half, mono-safe."""
+
+_FADE_SIZE: Final = 0.5
+"""Mote shrink point: below half size the burst speck replaces the star."""
 
 BOB_FPS: Final = 6
 """Sprite bob rate: idle/bob frames alternate six times a second."""
@@ -360,6 +367,39 @@ def juice_overlay(juice: JuiceState, now: float) -> JuiceOverlay:
 
 _ADVANCE_LINE: Final = "▲ ▲ ▲ SANCTUARY ADVANCES ▲ ▲ ▲"
 """Wave-clear ribbon: the step-forward names itself while drift pans."""
+
+
+def particle_layer(
+    particles: tuple[Particle, ...],
+    *,
+    width: int,
+    height: int,
+    mono: bool,
+    shake: int = 0,
+) -> tuple[FieldSprite, ...]:
+    """One chip-glyph sprite per live mote, camera-mapped to canvas cells.
+
+    Fresh motes paint the burst star in their blood tint; fading motes
+    shrink to a speck. Mono drops the tint, keeping the glyph.
+    """
+    sprites: list[FieldSprite] = []
+    for mote in particles:
+        cx, cy = world_to_cell(x=mote.x, y=mote.y, width=width, height=height)
+        glyph = _BURST_CELL if mote.size > _FADE_SIZE else _FADE_CELL
+        chip = Text()
+        _ = chip.append(glyph, style=None if mono else mote.color)
+        sprites.append(
+            FieldSprite(
+                x=0,
+                y=0,
+                art=(),
+                color=None,
+                chip=chip,
+                chip_x=min(max(cx + shake, 0), max(width - 1, 0)),
+                chip_y=cy,
+            ),
+        )
+    return tuple(sprites)
 
 
 def fx_line(overlay: JuiceOverlay, *, advancing: bool = False) -> str:
