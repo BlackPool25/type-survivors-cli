@@ -72,6 +72,7 @@ from tsurv.visuals import (
     agitated,
     agitated_mark,
     ambient_line,
+    boss_portal_mark,
     core_sprite_file,
     foe_hit_showing,
     foe_mark,
@@ -822,7 +823,8 @@ class ArenaScreen(Screen[None]):
         spawned = self._spawned_at.get(foe.id, 0.0)
         prefix = f"{' ' * shake}{indent}"
         if now - spawned < self._PORTAL_S:
-            prefix += f"{portal_mark()}{self._telegraph_warn(foe)} "
+            ring = boss_portal_mark() if foe.kind is EnemyKind.BOSS else portal_mark()
+            prefix += f"{ring}{self._telegraph_warn(foe)} "
         else:
             prefix += f"{glyph}{' ' if frame_tick % 2 else ''}"
             if agit:

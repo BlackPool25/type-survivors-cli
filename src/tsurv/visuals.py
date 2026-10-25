@@ -266,6 +266,11 @@ def portal_mark() -> str:
     return _PORTAL_MARK
 
 
+def boss_portal_mark() -> str:
+    """Boss spawn-portal: doubled glyph, larger and distinct, mono-safe."""
+    return _PORTAL_MARK * 2
+
+
 def agitated_mark() -> str:
     """Close-in warning glyph for an agitated foe."""
     return _AGITATED_MARK

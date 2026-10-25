@@ -26,6 +26,7 @@ from tsurv.visuals import (
     HUB_ENTRIES,
     ambient_line,
     approach_indent,
+    boss_portal_mark,
     core_sprite_file,
     foe_hit_showing,
     foe_mark,
@@ -561,6 +562,10 @@ def test_pilot_boss_banner_and_shake() -> None:
             )
             plate = f"{'●' * boss.hp_words} {boss.word.text} ☠"
             assert plate in screen.foes_text
+            portal = screen.query_one("#foe-word-0", Label).content
+            portal_plain = portal.plain if isinstance(portal, Text) else str(portal)
+            assert boss_portal_mark() in portal_plain
+            assert boss_portal_mark() != portal_mark()
 
     asyncio.run(_scenario())
 
