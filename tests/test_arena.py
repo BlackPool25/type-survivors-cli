@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Final
+
 from tsurv.arena import (
     LEAK_DAMAGE,
     EnemyKind,
@@ -9,6 +11,8 @@ from tsurv.arena import (
     advance,
     apply_pickup,
     boss_cleared,
+    chain_lightning,
+    clear_lock,
     corrupted_display,
     handle_keystroke,
     initial_arena,
@@ -32,6 +36,7 @@ _STEP = 1.0
 _LONG_WINDOW = 50.0
 _BELOW_RATE = 0.05
 _ABOVE_RATE = 0.50
+_CHAIN_ARCS: Final = 2
 
 
 def _word(text: str, corruption: Corruption = Corruption.CLEAN) -> Word:
@@ -159,10 +164,12 @@ def test_boss_wave_ends_on_kill() -> None:
     assert not isinstance(outcome, TypoStun)
     assert len(state.enemies) == 1
     assert state.enemies[0].hp_words == 1
+    assert state.kills == 0
     assert boss_cleared(state) is False
     for index, char in enumerate("alpha"):
         state, _ = handle_keystroke(state, char, _NOW + 10.0 + float(index))
     assert state.enemies == ()
+    assert state.kills == 1
     assert boss_cleared(state) is True
 
 
@@ -199,3 +206,38 @@ def test_advance_moves_leaks_and_reports_words() -> None:
     assert state.enemies == ()
     assert state.hp == 100.0 - LEAK_DAMAGE
     assert state.current is None
+
+
+def test_clear_lock_releases_target() -> None:
+    """Esc drops the lock and typed progress, leaving foes untouched."""
+    state = spawn_enemy(initial_arena(), _word("cat"))
+    state, _ = handle_keystroke(state, "c", _NOW)
+    assert state.current is not None
+    cleared = clear_lock(state)
+    assert cleared.current is None
+    assert cleared.typed == 0
+    assert len(cleared.enemies) == 1
+
+
+def test_chain_lightning_arcs_to_nearest_others() -> None:
+    """Chain Spark kills the two nearest foes past the typed one."""
+    state = initial_arena()
+    state = spawn_enemy(state, _word("aaa"), distance=7.0)
+    state = spawn_enemy(state, _word("bbb"), distance=3.0)
+    state = spawn_enemy(state, _word("ccc"), distance=5.0)
+    typed_id = state.enemies[0].id
+    after, zapped = chain_lightning(state, typed_id)
+    assert zapped == _CHAIN_ARCS
+    assert [str(foe.word.text) for foe in after.enemies] == ["aaa"]
+    assert after.kills == _CHAIN_ARCS
+    assert int(after.score) == (3 + 3) * 10
+
+
+def test_chain_lightning_caps_at_two_arcs() -> None:
+    """A fourth foe survives the arc cap."""
+    state = initial_arena()
+    for text in ("aaa", "bbb", "ccc", "ddd"):
+        state = spawn_enemy(state, _word(text))
+    after, zapped = chain_lightning(state, state.enemies[0].id)
+    assert zapped == _CHAIN_ARCS
+    assert len(after.enemies) == _CHAIN_ARCS

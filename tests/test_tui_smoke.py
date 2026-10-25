@@ -12,6 +12,7 @@ from textual.widgets import Label
 from tsurv.app import (
     GOLD_NEXT,
     HP_GREEN,
+    MAX_BOSS_BARS,
     ArenaScreen,
     ReportScreen,
     TypeSurvivorsApp,
@@ -165,3 +166,42 @@ def test_pause_is_a_flag_not_a_screen() -> None:
             assert screen.paused is False
 
     asyncio.run(_scenario())
+
+
+def test_escape_releases_lock() -> None:
+    """Esc drops the live lock; the foe survives for retyping."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(initial_words=(_GOLD_PROBE,), spawn_enabled=False)
+        async with app.run_test() as pilot:
+            await pilot.press("c")
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            assert screen.arena_state.current is not None
+            await pilot.press("escape")
+            assert screen.arena_state.current is None
+            assert _GOLD_PROBE in screen.foes_text
+
+    asyncio.run(_scenario())
+
+
+def test_pause_then_p_with_p_expecting_lock_unpauses() -> None:
+    """P always unpauses, even when the live lock expects a literal P."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(initial_words=("aP",), spawn_enabled=False)
+        async with app.run_test() as pilot:
+            await pilot.press("a")
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            screen.paused = True
+            await pilot.press("P")
+            assert screen.paused is False
+            assert screen.arena_state.typed == 1
+
+    asyncio.run(_scenario())
+
+
+def test_boss_bar_pool_fits_max_bars() -> None:
+    """The bossbar container sizes to the ProgressBar pool (fixed height)."""
+    assert f"#bossbars {{ height: {MAX_BOSS_BARS}; }}" in ArenaScreen.CSS

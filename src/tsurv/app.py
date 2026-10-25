@@ -119,7 +119,7 @@ class ArenaScreen(Screen[None]):
         "Screen { background: #0B0B12; color: #CACACA; }\n"
         "#arena { height: 12; }\n"
         "#foes { height: 6; }\n"
-        "#bossbars { height: 3; }\n"
+        f"#bossbars {{ height: {MAX_BOSS_BARS}; }}\n"
         "#topbar { height: 1; color: #CACACA; }\n"
         "#typing { height: 1; color: #CACACA; }\n"
         "#stun { height: 1; color: #FFD23F; }\n"
@@ -290,12 +290,13 @@ class ArenaScreen(Screen[None]):
     async def on_key(self, event: events.Key) -> None:
         """Type-to-target: printable chars feed the arena, P pauses."""
         ch = event.character
-        if ch is None:
-            if event.key == "escape":
-                self._arena = clear_lock(self._arena)
-                self._refresh()
+        if event.key == "escape":
+            self._arena = clear_lock(self._arena)
+            self._refresh()
             return
-        if ch == "P" and not self._expects_upper_p():
+        if ch is None:
+            return
+        if ch == "P" and (self.paused or not self._expects_upper_p()):
             self.paused = not self.paused
             self._refresh()
             return

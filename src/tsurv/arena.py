@@ -178,7 +178,6 @@ def handle_keystroke(
                     state,
                     enemies=burned,
                     score=gained,
-                    kills=state.kills + 1,
                     streak=streak,
                     shield_until=merged,
                     current=target,
