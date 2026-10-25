@@ -29,7 +29,7 @@ def test_boss_has_crown() -> None:
     assert plain.crown == ""
     assert plain.crown_color is None
     art = ("#####", "#####")
-    assert crown_origin(10, 5, art) == (12, 4)
+    assert crown_origin(10, 5, art) == (10, 4)
 
 
 def test_tier_colors_distinct() -> None:

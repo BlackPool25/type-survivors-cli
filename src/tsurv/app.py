@@ -52,6 +52,7 @@ from tsurv.juice import (
     trigger_kill,
 )
 from tsurv.metrics import (
+    Consistency,
     Tally,
     consistency,
     leak_missed,
@@ -100,18 +101,16 @@ from tsurv.visuals import (
     boss_portal_mark,
     core_sprite_file,
     foe_hit_showing,
-    foe_mark,
-    foe_plate_text,
     foe_sprite_file,
     fx_line,
     hub_banner_text,
     hub_greeting,
     hub_list_text,
     juice_overlay,
+    marker,
     portal_mark,
     shop_row_text,
     sprite_path,
-    tier_pips,
 )
 from tsurv.words import (
     TIER_WORDS,
@@ -240,6 +239,86 @@ def leaked_untyped(before: ArenaState, leaked: tuple[EnemyId, ...]) -> int:
     return total
 
 
+_HP_BAR_CELLS: Final = 10
+"""Top-rail HP bar width: ten blocks, each a tenth of max HP."""
+
+_WAVE_BAR_CELLS: Final = 5
+"""Bottom-rail wave bar width: one block per wave in the boss cycle."""
+
+_HP_RED: Final = "#FF2A2A"
+"""HP bar red: matches the boss crown and the death banner."""
+
+
+def _bar_text(*, fraction: float, width: int) -> str:
+    """Block bar: filled share of `width`, clamped, mono-safe glyphs."""
+    filled = min(max(round(fraction * width), 0), width)
+    return "█" * filled + "░" * (width - filled)
+
+
+def marker_plate(
+    *,
+    kind: EnemyKind,
+    tier: Tier,
+    word: str,
+    mono: bool,
+) -> Text:
+    """Circle-marker plate: crown + tier circle + ring + word, tinted.
+
+    Pip plates are gone: the tier circle carries difficulty, the elite ring
+    and boss crown ride alongside, and color never works alone (mono keeps
+    every glyph, drops every tint).
+    """
+    mark = marker(
+        kind,
+        tier,
+        elite=kind is EnemyKind.ELITE,
+        boss=kind is EnemyKind.BOSS,
+        mono=mono,
+    )
+    text = Text()
+    if mark.crown:
+        _ = text.append(f"{mark.crown} ", style=mark.crown_color)
+    _ = text.append(f"{mark.glyph}{mark.ring} {word}", style=mark.color)
+    return text
+
+
+def hud_top_rail(  # noqa: PLR0913 - a rail needs the full HUD snapshot at once
+    *,
+    hp: float,
+    max_hp: float,
+    streak: int,
+    score: int,
+    accuracy: float,
+    consist: Consistency,
+    mono: bool,
+) -> Text:
+    """Top rail: red HP bar `hp/max`, streak ×N, score, net ACC%, consistency."""  # noqa: RUF002 - intentional streak glyph, not letter x
+    bar = _bar_text(
+        fraction=hp / max_hp if max_hp > 0.0 else 0.0,
+        width=_HP_BAR_CELLS,
+    )
+    text = Text()
+    _ = text.append("HP [")
+    _ = text.append(bar, style=None if mono else _HP_RED)
+    consist_text = (
+        "CONS ~"
+        if consist.rough or consist.value is None
+        else f"CONS {consist.value:.0f}"
+    )
+    _ = text.append(f"] {hp:.0f}/{max_hp:.0f}  ×{streak}  ")  # noqa: RUF001 - intentional streak glyph, not letter x
+    _ = text.append(f"score {score}  ACC {accuracy:.0%}  {consist_text}")
+    return text
+
+
+def hud_bottom_rail(*, wave: int) -> Text:
+    """Bottom rail: wave banner, progress n/5, BOSS IN n, LV k."""
+    cycle = wave % BOSS_EVERY
+    done = BOSS_EVERY if cycle == 0 else cycle
+    bar = _bar_text(fraction=done / BOSS_EVERY, width=_WAVE_BAR_CELLS)
+    countdown = "BOSS WAVE" if cycle == 0 else f"BOSS IN {BOSS_EVERY - cycle}"
+    return Text(f"« WAVE {wave} »  [{bar}] {done}/{BOSS_EVERY}  {countdown}  LV {wave}")
+
+
 class ArenaScreen(Screen[None]):
     """The playable endless loop; death and pause stay on this screen."""
 
@@ -293,6 +372,7 @@ class ArenaScreen(Screen[None]):
         f"#bossbars {{ height: {MAX_BOSS_BARS}; }}\n"
         "#fx { width: 1fr; height: 1; color: #FFD23F; }\n"
         "#pixdiag { width: 1fr; height: 1; color: #24AEEB; text-align: center; }\n"
+        "#botrail { width: 1fr; height: 1; color: #CACACA; }\n"
         "#typing { width: 1fr; height: 3; border: solid #952CF5; dock: bottom; "
         "color: #CACACA; }\n"
         "#stun { height: 1; color: #FFD23F; }\n"
@@ -531,6 +611,7 @@ class ArenaScreen(Screen[None]):
                 yield from self._boss_bars
         yield Label("", id="fx")
         yield Label("", id="pixdiag")
+        yield Label("", id="botrail")
         yield Label("", id="typing")
         yield Label("", id="stun")
         yield Label("widen to 80+ columns to play", id="guard")
@@ -792,15 +873,21 @@ class ArenaScreen(Screen[None]):
         frame_tick = int(self._run_clock * BOB_FPS)
         compact = self.size.width < COMPACT_WIDTH
         hit = foe_hit_showing(self._juice, now)
-        wpm = rolling_wpm(self._kill_times, now)
         accuracy = tally_accuracy(self._tally)
-        vitals = f"HP {state.hp:.0f}  WPM {wpm:.0f}  x{state.streak}"
+        rail = hud_top_rail(
+            hp=state.hp,
+            max_hp=state.max_hp,
+            streak=state.streak,
+            score=int(state.score),
+            accuracy=accuracy,
+            consist=consistency(self._wpm_samples(now)),
+            mono=self.mono,
+        )
         if low_hp(state.hp, state.max_hp):
-            vitals += " LOW"
+            _ = rail.append(" LOW")
         if overlay.slow:
-            vitals += " SLO-MO"
-        progress = f"wave {state.wave}  score {int(state.score)}  acc {accuracy:.0%}"
-        self.query_one("#topbar", Label).update(Text(f"{vitals}  {progress}"))
+            _ = rail.append(" SLO-MO")
+        self.query_one("#topbar", Label).update(rail)
         if state.wave != self._last_wave:
             self._last_wave = state.wave
             self._advance_until = now + self._ADVANCE_S
@@ -817,6 +904,7 @@ class ArenaScreen(Screen[None]):
             hit=hit,
         )
         self.query_one("#pixdiag", Label).update(Text(self.pixdiag_text))
+        self.query_one("#botrail", Label).update(hud_bottom_rail(wave=state.wave))
         ribbon = fx_line(overlay, advancing=self.advance_active) or ambient_line(
             max(self.size.width, 1),
             frame_tick,
@@ -886,33 +974,39 @@ class ArenaScreen(Screen[None]):
             prefix += " "
         state = self._arena
         locked = foe.id == state.current and 0 < state.typed <= len(raw)
+        mark = marker(
+            foe.kind,
+            foe.word.tier,
+            elite=foe.kind is EnemyKind.ELITE,
+            boss=foe.kind is EnemyKind.BOSS,
+            mono=self.mono,
+        )
         if self.mono or not locked:
-            # Mono strips color only: pips and marks still read via glyphs.
+            # Mono strips color only: circles, rings, and crowns still read.
             globe = corrupted_display(foe.word)
-            replated = foe_plate_text(
-                globe,
+            plated = marker_plate(
                 kind=foe.kind,
                 tier=foe.word.tier,
-                corruption=foe.word.corruption,
-                hp_words=foe.hp_words,
+                word=globe,
+                mono=self.mono,
             )
             if agit and not self.mono:
                 _ = text.append(prefix)
-                _ = text.append(replated, style="bold #FF2A2A")
+                _ = text.append(plated.plain, style="bold #FF2A2A")
             else:
-                _ = text.append(prefix + replated)
+                _ = text.append(prefix)
+                _ = text.append_text(plated)
             return text
-        head = "●" * (
-            foe.hp_words if foe.kind is EnemyKind.BOSS else tier_pips(foe.word.tier)
-        )
-        _ = text.append(f"{prefix}{head} " if head else prefix)
+        _ = text.append(prefix)
+        if mark.crown:
+            _ = text.append(f"{mark.crown} ", style=mark.crown_color)
+        _ = text.append(f"{mark.glyph}{mark.ring} ", style=mark.color)
         _ = text.append(raw[: state.typed], style=HP_GREEN)
         _ = text.append(
             raw[state.typed : state.typed + 1],
             style=f"underline {GOLD_NEXT}",
         )
         _ = text.append(raw[state.typed + 1 :])
-        _ = text.append(f" {foe_mark(foe.kind, foe.word.corruption)}")
         return text
 
     def _set_sprite_image(

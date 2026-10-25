@@ -165,7 +165,7 @@ def art_origin(x: int, y: int, art: tuple[str, ...]) -> tuple[int, int]:
 
 def crown_origin(x: int, y: int, art: tuple[str, ...]) -> tuple[int, int]:
     """Boss-crown anchor: centered above the sprite's top row."""
-    return (x + len(art[0]) // 2, y - 1)
+    return (x, y - (len(art) + 1) // 4 - 1)
 
 
 def chip_origin(  # noqa: PLR0913 - chip anchor needs sprite box and room

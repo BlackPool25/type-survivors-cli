@@ -571,8 +571,8 @@ def test_pilot_foe_angles_surround_core() -> None:
     asyncio.run(_scenario())
 
 
-def test_pilot_plate_shows_pips_word_and_mark() -> None:
-    """Plates read `[pips] word [mark]`; the boss wears its HP-bar pips."""
+def test_pilot_plate_shows_circle_word_and_crown() -> None:
+    """Plates read `[circle] word`; the boss wears its crown and circle."""
 
     async def _scenario() -> None:
         app = TypeSurvivorsApp(
@@ -585,8 +585,8 @@ def test_pilot_plate_shows_pips_word_and_mark() -> None:
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, ArenaScreen)
-            assert "● cat >" in screen.foes_text
-            assert "●● overlord ☠" in screen.foes_text
+            assert "○ cat" in screen.foes_text
+            assert "♛ ◑ overlord" in screen.foes_text
 
     asyncio.run(_scenario())
 
@@ -632,7 +632,7 @@ def test_pilot_boss_banner_and_shake() -> None:
             boss = next(
                 foe for foe in screen.arena_state.enemies if foe.kind is EnemyKind.BOSS
             )
-            plate = f"{'●' * boss.hp_words} {boss.word.text} ☠"
+            plate = f"♛ ◑ {boss.word.text}"
             assert plate in screen.foes_text
             assert boss_portal_mark() in screen.foes_text
             assert boss_portal_mark() != portal_mark()
