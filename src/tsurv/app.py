@@ -229,16 +229,14 @@ def _default_words() -> tuple[str, ...]:
     return tuple(shown)
 
 
-def _leaked_untyped(before: ArenaState, leaked: tuple[str, ...]) -> int:
-    """Count chars left untyped on leaked foes (spawn deals unique words)."""
-    pending = list(leaked)
+def leaked_untyped(before: ArenaState, leaked: tuple[EnemyId, ...]) -> int:
+    """Count chars left untyped on leaked foes, matched by stable foe id."""
+    gone = set(leaked)
     total = 0
     for foe in before.enemies:
-        name = str(foe.word.text)
-        if name in pending:
-            pending.remove(name)
+        if foe.id in gone:
             typed = before.typed if foe.id == before.current else 0
-            total += leak_missed(name, typed)
+            total += leak_missed(str(foe.word.text), typed)
     return total
 
 
@@ -608,8 +606,9 @@ class ArenaScreen(Screen[None]):
         else:
             self._arena, leaked = advance(self._arena, dt)
         if leaked:
-            self._killer = leaked[0]
-            self._tally = self._tally.add_missed(_leaked_untyped(before_leak, leaked))
+            names = {foe.id: str(foe.word.text) for foe in before_leak.enemies}
+            self._killer = names[leaked[0]]
+            self._tally = self._tally.add_missed(leaked_untyped(before_leak, leaked))
             self._refresh()
             return
         self._wave_clock += dt

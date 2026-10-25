@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from math import cos, pi, sin
 from typing import Final, NewType, assert_never
 
 from tsurv.combat import (
@@ -55,6 +56,15 @@ MERCY_SPAWN_SLOWDOWN: Final = 1.5
 ELITE_DROP_RATE: Final = 0.10
 """Elite Chain Spark drop chance per kill (~10%)."""
 
+MAX_SIMULTANEOUS: Final = 8
+"""Field cap: one wave never deals more foes than the viewport holds."""
+
+SPAWN_BASE_RADIUS: Final = 5.0
+"""Level-1 ring distance: today's spawn gap, so impact seconds carry over."""
+
+SPAWN_RADIUS_STEP: Final = 0.5
+"""World units added per level past the first: outer rings buy typing time."""
+
 
 def _speed_of(kind: EnemyKind) -> float:
     """Convergence speed in distance units per second (exhaustive)."""
@@ -76,6 +86,21 @@ def _speed_of(kind: EnemyKind) -> float:
 def seconds_to_impact(kind: EnemyKind, distance: float) -> float:
     """Seconds until a foe at `distance` leaks (Task 7 telegraph hook)."""
     return distance / _speed_of(kind)
+
+
+def spawn_count_for_level(level: int) -> int:
+    """Simultaneous wave size: 1 + level//2, capped at the field cap."""
+    return min(max(1 + level // 2, 1), MAX_SIMULTANEOUS)
+
+
+def spawn_radius_for_level(level: int) -> float:
+    """Ring radius in world units: today's distance at level 1, wider later."""
+    return SPAWN_BASE_RADIUS + SPAWN_RADIUS_STEP * float(max(level - 1, 0))
+
+
+def world_xy(foe: ArenaEnemy) -> tuple[float, float]:
+    """World-space position of a foe (polar sim state to camera input)."""
+    return (foe.distance * cos(foe.angle), foe.distance * sin(foe.angle))
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +248,39 @@ def spawn_enemy(
     return replace(state, enemies=(*state.enemies, foe), next_id=state.next_id + 1)
 
 
+def spawn_wave(
+    state: ArenaState,
+    words: tuple[Word, ...],
+    level: int,
+    start_angle: float = 0.0,
+    kind: EnemyKind = EnemyKind.GRUNT,
+) -> ArenaState:
+    """Deal one simultaneous ring wave: even spread on the level radius.
+
+    The caller deals the words (uniqueness stays the spawner's job); the
+    ring owns geometry only. Angles land 2pi/n apart, so foes never stack.
+    """
+    radius = spawn_radius_for_level(level)
+    count = len(words)
+    step = (2.0 * pi / count) if count else 0.0
+    foes = tuple(
+        ArenaEnemy(
+            id=EnemyId(state.next_id + index),
+            kind=kind,
+            word=word,
+            hp_words=1,
+            distance=radius,
+            angle=(start_angle + float(index) * step) % (2.0 * pi),
+        )
+        for index, word in enumerate(words)
+    )
+    return replace(
+        state,
+        enemies=(*state.enemies, *foes),
+        next_id=state.next_id + count,
+    )
+
+
 def handle_keystroke(
     state: ArenaState,
     ch: str,
@@ -309,13 +367,13 @@ def handle_keystroke(
             return state, outcome
 
 
-def advance(state: ArenaState, dt: float) -> tuple[ArenaState, tuple[str, ...]]:
-    """Move foes inward; leaks cost HP, clear the lock, and name words."""
+def advance(state: ArenaState, dt: float) -> tuple[ArenaState, tuple[EnemyId, ...]]:
+    """Move foes inward; leaks cost HP, clear the lock, and report foe ids."""
     moved = tuple(
         replace(foe, distance=foe.distance - _speed_of(foe.kind) * dt)
         for foe in state.enemies
     )
-    leaked = tuple(str(foe.word.text) for foe in moved if foe.distance <= 0.0)
+    leaked = tuple(foe.id for foe in moved if foe.distance <= 0.0)
     rest = tuple(foe for foe in moved if foe.distance > 0.0)
     hp = max(state.hp - LEAK_DAMAGE * len(leaked), 0.0)
     live = state.current if any(foe.id == state.current for foe in rest) else None

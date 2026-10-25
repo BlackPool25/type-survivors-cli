@@ -141,6 +141,23 @@ def canvas_xy(  # noqa: PLR0913 - ring math needs angle, distance, framing
     )
 
 
+def world_to_cell(*, x: float, y: float, width: int, height: int) -> tuple[int, int]:
+    """Camera map: world units to canvas cells, core-centered at any viewport.
+
+    Scale matches the ring math (two cells per unit, vertical squash), so one
+    world pos lands on the same center-relative cell at 80x24 and 120x30.
+    Clamps into the viewport: far rings clip instead of escaping.
+    """
+    cx = width // 2
+    cy = height // 2
+    px = cx + round(x * _RADIUS_PER_DISTANCE)
+    py = cy + round(y * _RADIUS_PER_DISTANCE / _SQUASH)
+    return (
+        min(max(px, 0), max(width - 1, 0)),
+        min(max(py, 0), max(height - 1, 0)),
+    )
+
+
 def art_origin(x: int, y: int, art: tuple[str, ...]) -> tuple[int, int]:
     """Top-left cell anchoring pixel art centered on a canvas point."""
     return (x - len(art[0]) // 2, y - (len(art) + 1) // 4)

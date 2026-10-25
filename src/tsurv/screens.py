@@ -20,6 +20,8 @@ from tsurv.words import Corruption
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from tsurv.combat import EnemyId
+
 GOLD_PER_KILL: Final = 5
 """Run gold banked per kill toward the meta shop."""
 
@@ -293,7 +295,7 @@ def load_checkpoint(directory: Path) -> Checkpoint:
 def practice_advance(
     state: ArenaState,
     dt: float,
-) -> tuple[ArenaState, tuple[str, ...]]:
+) -> tuple[ArenaState, tuple[EnemyId, ...]]:
     """No-death drill tick: foes converge and leak, but HP never drops."""
     after, leaked = advance(state, dt)
     return replace(after, hp=max(after.hp, state.hp)), leaked

@@ -198,10 +198,11 @@ def test_checkpoint_rejects_missing_and_corrupt(tmp_path: Path) -> None:
 
 
 def test_practice_mode_is_no_death() -> None:
-    """Practice leaks remove foes and name words, but HP never drops."""
+    """Practice leaks remove foes and report ids, but HP never drops."""
     state = spawn_enemy(initial_arena(), _word("cat"), distance=0.5)
+    foe_id = state.enemies[0].id
     after, leaked = practice_advance(state, 1.0)
-    assert leaked == ("cat",)
+    assert leaked == (foe_id,)
     assert after.hp == state.hp
     for _ in range(10):
         state = spawn_enemy(state, _word("cat"), distance=0.5)

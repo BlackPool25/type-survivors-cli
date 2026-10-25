@@ -202,11 +202,12 @@ def test_corrupted_rendering_is_display_only() -> None:
     assert state.enemies == ()
 
 
-def test_advance_moves_leaks_and_reports_words() -> None:
-    """Tick movement converges enemies; leaks cost HP and name their words."""
+def test_advance_moves_leaks_and_reports_ids() -> None:
+    """Tick movement converges enemies; leaks cost HP and report foe ids."""
     state = spawn_enemy(initial_arena(), _word("cat"), distance=0.5)
+    foe_id = state.enemies[0].id
     state, leaked = advance(state, 1.0)
-    assert leaked == ("cat",)
+    assert leaked == (foe_id,)
     assert state.enemies == ()
     assert state.hp == 100.0 - LEAK_DAMAGE
     assert state.current is None
