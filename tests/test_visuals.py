@@ -7,18 +7,19 @@ import math
 import random
 from dataclasses import replace
 from itertools import pairwise
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from par_textual_image import TerminalImage
 from rich.text import Text
 from textual import events
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.widgets import Label
 
 from tsurv.app import BOSS_EVERY, ArenaScreen, HubScreen, TypeSurvivorsApp
 from tsurv.arena import EnemyKind
 from tsurv.juice import PARTICLE_BURST, JuiceState, trigger_bar_break
 from tsurv.profile import Profile
+from tsurv.stage import ArenaCanvas
 from tsurv.visuals import (
     AMBIENT_SEEDS,
     APPROACH_MAX,
@@ -41,6 +42,9 @@ from tsurv.visuals import (
     tier_pips,
 )
 from tsurv.words import Corruption, Tier
+
+if TYPE_CHECKING:
+    import pytest
 
 _SEED: Final = 7
 _NOW: Final = 100.0
@@ -182,10 +186,13 @@ def test_shop_row_shows_price_or_owned_beside_blurb() -> None:
     assert "OWNED" in shop_row_text("Blood Vial Cache", 100, "heal", owned=True)
 
 
-def test_pilot_arena_mounts_sprite_widgets_for_foes() -> None:
+def test_pilot_arena_mounts_sprite_widgets_for_foes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Each spawned foe (plus the core) gets a loaded TerminalImage widget."""
 
     async def _scenario() -> None:
+        monkeypatch.setenv("TSURV_TRUEPIXEL", "1")
         app = TypeSurvivorsApp(initial_words=("cat", "dog"), spawn_enabled=False)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -277,10 +284,13 @@ def test_pilot_hub_greets_returning_player() -> None:
     asyncio.run(_scenario())
 
 
-def test_pilot_compact_layout_keeps_sprites_and_words_legible() -> None:
+def test_pilot_compact_layout_keeps_sprites_and_words_legible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """At 80 cols the compact layout still shows words beside their sprites."""
 
     async def _scenario() -> None:
+        monkeypatch.setenv("TSURV_TRUEPIXEL", "1")
         app = TypeSurvivorsApp(initial_words=("cat",), spawn_enabled=False)
         async with app.run_test(size=(80, 24)) as pilot:
             await pilot.pause()
@@ -349,8 +359,8 @@ def test_pilot_hub_centered_bordered_panels() -> None:
     asyncio.run(_scenario((120, 30)))
 
 
-def test_pilot_arena_sections_fill_viewport() -> None:
-    """Topbar/field/fx/input stack edge-to-edge; field fills the remainder."""
+def test_pilot_stage_stacks_under_topbar() -> None:
+    """Topbar/stage/fx/input stack edge-to-edge; the stage fills the rest."""
 
     async def _scenario(size: tuple[int, int]) -> None:
         app = TypeSurvivorsApp(initial_words=("cat", "dog"), spawn_enabled=False)
@@ -361,33 +371,74 @@ def test_pilot_arena_sections_fill_viewport() -> None:
             width, height = size
             topbar = screen.query_one("#topbar", Label)
             arena = screen.query_one("#arena", Vertical)
-            field = screen.query_one("#foes", Vertical)
+            stage = screen.query_one("#stage", Vertical)
             typing = screen.query_one("#typing", Label)
             assert topbar.region.width == width
             assert arena.region.y == topbar.region.y + topbar.region.height
-            assert arena.region.height > field.region.height
-            assert field.region.height >= _FIELD_ROWS_MIN
+            assert arena.region.height > stage.region.height
+            assert stage.region.height >= _FIELD_ROWS_MIN
             assert typing.region.bottom == height
             assert typing.region.width == width
-            row = screen.query_one("#foe-row-0", Horizontal)
-            sprite = screen.query_one("#foe-sprite-0", TerminalImage)
-            assert sprite.region.width > _GUARD_CELLS
-            assert sprite.region.height > _GUARD_CELLS
-            assert row.region.width == arena.region.width - _GUARD_CELLS
-            core_row = screen.query_one("#core-row", Horizontal)
-            core = screen.query_one("#core-sprite", TerminalImage)
-            row_cx = core_row.region.x + core_row.region.width // 2
-            core_cx = core.region.x + core.region.width // 2
-            assert abs(row_cx - core_cx) <= _CORE_OFF_TOLERANCE
 
     asyncio.run(_scenario((80, 24)))
     asyncio.run(_scenario((120, 30)))
 
 
-def test_pilot_sprite_bound_to_foe_row() -> None:
-    """Each foe row pairs its own sprite with its word; kills rebind rows."""
+def test_pilot_kitty_core_centers_on_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The kitty core widget anchors on the stage midpoint, both sizes."""
+
+    async def _scenario(size: tuple[int, int]) -> None:
+        monkeypatch.setenv("TSURV_TRUEPIXEL", "1")
+        app = TypeSurvivorsApp(initial_words=("cat",), spawn_enabled=False)
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            stage = screen.query_one("#stage", Vertical)
+            core = screen.query_one("#core-sprite", TerminalImage)
+            core_cx = core.region.x + core.region.width // 2
+            core_cy = core.region.y + core.region.height // 2
+            stage_cx = stage.region.x + stage.region.width // 2
+            stage_cy = stage.region.y + stage.region.height // 2
+            assert abs(core_cx - stage_cx) <= _CORE_CENTER_TOL
+            assert abs(core_cy - stage_cy) <= _CORE_CENTER_TOL
+
+    asyncio.run(_scenario((80, 24)))
+    asyncio.run(_scenario((120, 30)))
+
+
+def test_pilot_cells_core_centers_on_canvas(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cells core art sits on the canvas midpoint; chips name the foes."""
+
+    async def _scenario(size: tuple[int, int]) -> None:
+        monkeypatch.setenv("TSURV_TRUEPIXEL", "0")
+        app = TypeSurvivorsApp(initial_words=("cat",), spawn_enabled=False)
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            assert screen.pixdiag_text == "pixels: cells (TSURV_TRUEPIXEL=0)"
+            canvas = screen.query_one("#field", ArenaCanvas)
+            rows = canvas.rendered.plain.split("\n")
+            assert "cat" in canvas.rendered.plain
+            middle = rows[len(rows) // 2 - 2 : len(rows) // 2 + 3]
+            assert any("█" in row or "▀" in row or "▄" in row for row in middle)
+
+    asyncio.run(_scenario((80, 24)))
+    asyncio.run(_scenario((120, 30)))
+
+
+def test_pilot_kitty_sprite_bound_to_foe_chip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each kitty slot pairs its own sprite with its chip; kills free slots."""
 
     async def _scenario() -> None:
+        monkeypatch.setenv("TSURV_TRUEPIXEL", "1")
         app = TypeSurvivorsApp(initial_words=("cat", "dog"), spawn_enabled=False)
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -396,8 +447,6 @@ def test_pilot_sprite_bound_to_foe_row() -> None:
             foes = screen.arena_state.enemies
             assert [str(foe.word.text) for foe in foes] == ["cat", "dog"]
             for index, foe in enumerate(foes):
-                row = screen.query_one(f"#foe-row-{index}", Horizontal)
-                assert row.display
                 sprite = screen.query_one(f"#foe-sprite-{index}", TerminalImage)
                 assert sprite.display
                 assert sprite.image is not None
@@ -416,6 +465,31 @@ def test_pilot_sprite_bound_to_foe_row() -> None:
             freed = screen.query_one("#foe-sprite-1", TerminalImage)
             assert freed.display is False
             assert freed.image is None
+
+    asyncio.run(_scenario())
+
+
+def test_pilot_cells_field_tracks_kills_without_sprites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cells canvas names every foe chip and drops victims on kill."""
+
+    async def _scenario() -> None:
+        monkeypatch.setenv("TSURV_TRUEPIXEL", "0")
+        app = TypeSurvivorsApp(initial_words=("cat", "dog"), spawn_enabled=False)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            assert len(screen.query(TerminalImage)) == 0
+            canvas = screen.query_one("#field", ArenaCanvas)
+            assert "cat" in canvas.rendered.plain
+            assert "dog" in canvas.rendered.plain
+            for char in "cat":
+                await screen.on_key(events.Key(char, char))
+            await pilot.pause()
+            assert len(screen.arena_state.enemies) == 1
+            assert "dog" in canvas.rendered.plain
 
     asyncio.run(_scenario())
 
@@ -449,25 +523,27 @@ def test_foe_mark_covers_every_corruption_and_kind() -> None:
         assert tier_pips(tier) >= 1
 
 
-def test_pilot_core_centered_large() -> None:
-    """The Sanctuary Core renders large at the arena centre, never a label."""
+def test_pilot_core_centered_large(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Sanctuary Core renders large at the stage centre, never a label."""
 
     async def _scenario(size: tuple[int, int]) -> None:
+        monkeypatch.setenv("TSURV_TRUEPIXEL", "1")
         app = TypeSurvivorsApp(initial_words=("cat",), spawn_enabled=False, seed=_SEED)
         async with app.run_test(size=size) as pilot:
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, ArenaScreen)
-            width, _ = size
-            row = screen.query_one("#core-row", Horizontal)
-            assert len(list(row.children)) == 1
+            stage = screen.query_one("#stage", Vertical)
             core = screen.query_one("#core-sprite", TerminalImage)
             assert core.display
             assert core.image is not None
             assert core.region.width >= _CORE_CELLS_W
             assert core.region.height >= _CORE_CELLS_H
             center = core.region.x + core.region.width // 2
-            assert abs(center - width // 2) <= _CORE_CENTER_TOL
+            stage_cx = stage.region.x + stage.region.width // 2
+            assert abs(center - stage_cx) <= _CORE_CENTER_TOL
 
     asyncio.run(_scenario((80, 24)))
     asyncio.run(_scenario((120, 30)))
@@ -525,15 +601,11 @@ def test_pilot_portal_precedes_plate() -> None:
             screen = app.screen
             assert isinstance(screen, ArenaScreen)
             screen.spawn_test_enemy("cat", distance=5.0)
-            first = screen.query_one("#foe-word-0", Label).content
-            first_plain = first.plain if isinstance(first, Text) else str(first)
-            assert portal_mark() in first_plain
+            assert portal_mark() in screen.foes_text
             await asyncio.sleep(0.35)
             screen.tick(0.0)
-            second = screen.query_one("#foe-word-0", Label).content
-            second_plain = second.plain if isinstance(second, Text) else str(second)
-            assert portal_mark() not in second_plain
-            assert "cat" in second_plain
+            assert portal_mark() not in screen.foes_text
+            assert "cat" in screen.foes_text
 
     asyncio.run(_scenario())
 
@@ -562,9 +634,7 @@ def test_pilot_boss_banner_and_shake() -> None:
             )
             plate = f"{'●' * boss.hp_words} {boss.word.text} ☠"
             assert plate in screen.foes_text
-            portal = screen.query_one("#foe-word-0", Label).content
-            portal_plain = portal.plain if isinstance(portal, Text) else str(portal)
-            assert boss_portal_mark() in portal_plain
+            assert boss_portal_mark() in screen.foes_text
             assert boss_portal_mark() != portal_mark()
 
     asyncio.run(_scenario())

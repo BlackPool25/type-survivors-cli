@@ -7,13 +7,13 @@ import os
 import random
 import time
 from dataclasses import replace
-from typing import TYPE_CHECKING, ClassVar, Final, assert_never, override
+from typing import TYPE_CHECKING, ClassVar, Final, override
 
 from par_textual_image import TerminalImage
-from PIL import Image
+from PIL import Image, ImageOps
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Center, Horizontal, Middle, Vertical
+from textual.containers import Center, Middle, Vertical
 from textual.screen import Screen
 from textual.widgets import Label, ProgressBar
 
@@ -65,6 +65,23 @@ from tsurv.screens import (
     snapshot,
     update_settings,
 )
+from tsurv.stage import (
+    CELL_ART,
+    CELL_ART_HIT,
+    CORE_ART,
+    CORE_ART_HIT,
+    ArenaCanvas,
+    FieldSprite,
+    RendererKind,
+    RendererPick,
+    art_origin,
+    canvas_xy,
+    chip_origin,
+    portal_art,
+    probe_renderer,
+    render_field,
+    sprite_color,
+)
 from tsurv.visuals import (
     BOB_FPS,
     COMPACT_WIDTH,
@@ -84,7 +101,6 @@ from tsurv.visuals import (
     hub_list_text,
     juice_overlay,
     portal_mark,
-    radial_indent,
     shop_row_text,
     sprite_path,
     tier_pips,
@@ -111,7 +127,7 @@ _sprite_cache: dict[str, Image.Image] = {}
 
 
 def sprite_image(filename: str) -> Image.Image | None:
-    """Load sprite bytes once, cached; None when the asset file is missing."""
+    """Load sprite bytes once, cached; boss art doubles: size reads threat."""
     if filename not in _sprite_cache:
         path = sprite_path(filename)
         if not path.is_file():
@@ -119,6 +135,8 @@ def sprite_image(filename: str) -> Image.Image | None:
         with Image.open(path) as handle:
             pic = handle.convert("RGBA")
             _ = pic.load()
+        if filename.startswith("boss"):
+            pic = ImageOps.scale(pic, 2, resample=Image.Resampling.NEAREST)
         _sprite_cache[filename] = pic
     return _sprite_cache[filename]
 
@@ -158,37 +176,9 @@ def colors_enabled() -> bool:
     return "NO_COLOR" not in os.environ
 
 
-def true_pixel_available() -> bool:
-    """Capability probe gating true-pixel TerminalImage rendering."""
-    return os.environ.get("TSURV_TRUEPIXEL") == "1"
-
-
 def is_narrow(width: int) -> bool:
     """Guard predicate: windows under 80 cols cannot host the arena."""
     return width < GUARD_WIDTH
-
-
-def sprite_text(kind: EnemyKind, frame: int = 0) -> str:
-    """Half-block fallback sprite: glyph per kind, never color-only identity.
-
-    True-pixel TerminalImage renders only behind true_pixel_available();
-    this deterministic string is the first display path everywhere else.
-    """
-    match kind:
-        case EnemyKind.GRUNT:
-            glyph = "▛█▜"
-        case EnemyKind.MITE:
-            glyph = "▄█▄"
-        case EnemyKind.HEX:
-            glyph = "█▄█"
-        case EnemyKind.ELITE:
-            glyph = "▀█▀"
-        case EnemyKind.BOSS:
-            glyph = "██████"
-        case _:
-            assert_never(kind)
-    bob = "" if frame % 2 == 0 else " "
-    return f"{glyph}{bob}"
 
 
 def boss_word_text(
@@ -252,25 +242,32 @@ class ArenaScreen(Screen[None]):
     _ADVANCE_DRIFT_S: ClassVar[float] = 2.0
     """Pan ease length: the drift outlives the step so motion reads."""
 
-    _HALF_FOES: ClassVar[int] = 4
-    """Half the foe slots hang below the core: the ring reads above and below."""
+    _SPRITE_W: ClassVar[int] = 10
+    """Kitty foe sprite widget width: PNGs fit the same box on all kinds."""
+
+    _SPRITE_H: ClassVar[int] = 3
+    """Kitty foe sprite widget height: rows keep clear of word chips."""
+
+    _CORE_W: ClassVar[int] = 12
+    """Kitty core sprite widget width: the Sanctuary Core renders large."""
+
+    _CORE_H: ClassVar[int] = 4
+    """Kitty core sprite widget height: the Sanctuary Core renders large."""
 
     CSS: ClassVar[str] = (
         "Screen { background: #0B0B12; color: #CACACA; }\n"
         "#topbar { width: 1fr; height: 3; border: solid #952CF5; color: #CACACA; }\n"
         "#arena { height: 1fr; border: solid #952CF5; }\n"
-        "#foes { height: 1fr; }\n"
-        "#foes-above { height: 1fr; }\n"
-        "#foes-below { height: 1fr; }\n"
-        ".foe-row { height: 3; }\n"
-        ".foe-row TerminalImage { width: 10; height: 3; }\n"
-        ".foe-word { width: 1fr; height: 3; content-align: left middle; }\n"
-        "#core-row { height: 4; align: center middle; }\n"
-        "#core-row TerminalImage { width: 12; height: 4; }\n"
+        "#stage { height: 1fr; }\n"
+        "#field { width: 1fr; height: 1fr; }\n"
+        ".foe-sprite { position: absolute; width: 10; height: 3; }\n"
+        "#core-sprite { position: absolute; width: 12; height: 4; }\n"
+        ".foe-chip { position: absolute; width: auto; height: 1; }\n"
         "#bossbanner { width: 1fr; height: 2; color: #FF2A2A; "
         "text-style: bold; text-align: center; }\n"
         f"#bossbars {{ height: {MAX_BOSS_BARS}; }}\n"
         "#fx { width: 1fr; height: 1; color: #FFD23F; }\n"
+        "#pixdiag { width: 1fr; height: 1; color: #24AEEB; text-align: center; }\n"
         "#typing { width: 1fr; height: 3; border: solid #952CF5; dock: bottom; "
         "color: #CACACA; }\n"
         "#stun { height: 1; color: #FFD23F; }\n"
@@ -333,11 +330,11 @@ class ArenaScreen(Screen[None]):
         self._presses: int = 0
         self._hits: int = 0
         self._killer: str | None = None
-        self._foes_render: Text = Text("")
         self._boss_bars: list[ProgressBar] = [
             ProgressBar(total=1, show_bar=True, show_percentage=False)
             for _ in range(MAX_BOSS_BARS)
         ]
+        self._pick: RendererPick = probe_renderer()
         self._last_wave: int = state.wave
         self._boss_banner_until: float = 0.0
         self._advance_until: float = 0.0
@@ -377,13 +374,27 @@ class ArenaScreen(Screen[None]):
 
     @property
     def foes_text(self) -> str:
-        """Plain-text foe listing (display renderings, one per line)."""
-        return self._foes_render.plain
+        """Plain-text foe listing (word chips, one per line)."""
+        frame_tick = int(self._run_clock * BOB_FPS)
+        now = time.monotonic()
+        return "\n".join(
+            self._chip_text(foe, frame_tick, now).plain for foe in self._arena.enemies
+        )
 
     @property
     def foes_span_count(self) -> int:
-        """Style span count on the foe text (zero exactly when mono)."""
-        return len(self._foes_render.spans)
+        """Style span count on the foe chips (zero exactly when mono)."""
+        frame_tick = int(self._run_clock * BOB_FPS)
+        now = time.monotonic()
+        return sum(
+            len(self._chip_text(foe, frame_tick, now).spans)
+            for foe in self._arena.enemies
+        )
+
+    @property
+    def pixdiag_text(self) -> str:
+        """Active renderer diagnostics line (tests read the probe through this)."""
+        return self._pick.label
 
     @property
     def stun_visible(self) -> bool:
@@ -453,36 +464,36 @@ class ArenaScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Header, foe sprite+word rows, core, boss bars, fx, typing, flags."""
+        """Header, true-2D stage, boss bars, fx, diagnostics, typing, flags."""
+        kitty = self._pick.kind is RendererKind.KITTY
         yield Label("", id="topbar")
         yield Label("", id="bossbanner")
         with Vertical(id="arena"):
-            with Vertical(id="foes"):
-                with Vertical(id="foes-above"):
-                    for index in range(self._HALF_FOES):
-                        with Horizontal(id=f"foe-row-{index}", classes="foe-row"):
-                            yield TerminalImage(id=f"foe-sprite-{index}")
-                            yield Label("", id=f"foe-word-{index}", classes="foe-word")
-                with Horizontal(id="core-row"):
+            with Vertical(id="stage"):
+                if kitty:
                     yield TerminalImage(id="core-sprite")
-                with Vertical(id="foes-below"):
-                    for index in range(self._HALF_FOES, MAX_FOES):
-                        with Horizontal(id=f"foe-row-{index}", classes="foe-row"):
-                            yield TerminalImage(id=f"foe-sprite-{index}")
-                            yield Label("", id=f"foe-word-{index}", classes="foe-word")
+                    for index in range(MAX_FOES):
+                        yield TerminalImage(
+                            id=f"foe-sprite-{index}",
+                            classes="foe-sprite",
+                        )
+                        yield Label("", id=f"foe-word-{index}", classes="foe-chip")
+                else:
+                    yield ArenaCanvas(widget_id="field")
             with Vertical(id="bossbars"):
                 yield from self._boss_bars
         yield Label("", id="fx")
+        yield Label("", id="pixdiag")
         yield Label("", id="typing")
         yield Label("", id="stun")
         yield Label("widen to 80+ columns to play", id="guard")
         yield Label("", id="death")
 
     def on_mount(self) -> None:
-        """First paint, mosaic fallback, viewport guard, then the 60fps tick."""
-        if not true_pixel_available():
+        """First paint, explicit kitty pin, viewport guard, then 60fps tick."""
+        if self._pick.kind is RendererKind.KITTY:
             for widget in self.query(TerminalImage):
-                widget.force_protocol("halfblock")
+                widget.force_protocol("kitty")
         self._refresh()
         self.check_viewport()
         _ = self.set_interval(1 / 60, self._tick)
@@ -729,14 +740,7 @@ class ArenaScreen(Screen[None]):
         banner = self.query_one("#bossbanner", Label)
         banner.update(Text(self.boss_banner_text))
         banner.display = self.boss_banner_text != ""
-        self._foes_render = self._foes_text(
-            frame_tick,
-            now,
-            self._drift_scroll(now),
-            compact=compact,
-            shake=overlay.shake,
-        )
-        self._refresh_foe_rows(
+        self._refresh_stage(
             frame_tick,
             now,
             self._drift_scroll(now),
@@ -744,6 +748,7 @@ class ArenaScreen(Screen[None]):
             shake=overlay.shake,
             hit=hit,
         )
+        self.query_one("#pixdiag", Label).update(Text(self.pixdiag_text))
         ribbon = fx_line(overlay, advancing=self.advance_active) or ambient_line(
             max(self.size.width, 1),
             frame_tick,
@@ -783,50 +788,30 @@ class ArenaScreen(Screen[None]):
             return "!"
         return ""
 
-    def _foe_line(  # noqa: PLR0913 - one foe row needs its full render context
+    def _chip_text(
         self,
         foe: ArenaEnemy,
         frame_tick: int = 0,
         now: float = 0.0,
-        scroll: int = 0,
         *,
-        compact: bool = False,
         shake: int = 0,
     ) -> Text:
-        """One foe row: ring indent, sprite, plate (pips + word + mark).
+        """One foe word chip: plate (pips + word + mark), shake-shifted.
 
-        Portal foes show the spawn glyph while scaling in; agitated foes
-        (inside ``AGITATED_DISTANCE``) bob double-time with a warning mark
-        and a red plate. The typed-lock highlight survives on the word.
+        Portal foes show the spawn mark while scaling in; agitated foes
+        (inside ``AGITATED_DISTANCE``) keep the warning mark and a red plate.
+        The typed-lock highlight survives on the word.
         """
         text = Text()
         raw = str(foe.word.text)
         agit = agitated(foe.distance)
-        rate = 2 if agit else 1
-        glyph = sprite_text(foe.kind, frame_tick * rate)
-        width = max(self.size.width, 1)
-        plate = foe_plate_text(
-            raw,
-            kind=foe.kind,
-            tier=foe.word.tier,
-            corruption=foe.word.corruption,
-            hp_words=foe.hp_words,
-        )
-        indent = radial_indent(
-            angle=foe.angle,
-            distance=foe.distance,
-            width=width,
-            plate_len=len(glyph) + 1 + len(plate),
-            compact=compact,
-            scroll=scroll,
-        )
         spawned = self._spawned_at.get(foe.id, 0.0)
-        prefix = f"{' ' * shake}{indent}"
+        prefix = " " * shake
         if now - spawned < self._PORTAL_S:
             ring = boss_portal_mark() if foe.kind is EnemyKind.BOSS else portal_mark()
             prefix += f"{ring}{self._telegraph_warn(foe)} "
         else:
-            prefix += f"{glyph}{' ' if frame_tick % 2 else ''}"
+            prefix += f"{' ' if frame_tick % 2 else ''}"
             if agit:
                 prefix += agitated_mark()
             prefix += self._telegraph_warn(foe)
@@ -862,32 +847,6 @@ class ArenaScreen(Screen[None]):
         _ = text.append(f" {foe_mark(foe.kind, foe.word.corruption)}")
         return text
 
-    def _foes_text(
-        self,
-        frame_tick: int = 0,
-        now: float = 0.0,
-        scroll: int = 0,
-        *,
-        compact: bool = False,
-        shake: int = 0,
-    ) -> Text:
-        """Aggregate foe lines (plain-text path; live rows paint each line)."""
-        text = Text()
-        for index, foe in enumerate(self._arena.enemies):
-            if index:
-                _ = text.append("\n")
-            _ = text.append_text(
-                self._foe_line(
-                    foe,
-                    frame_tick,
-                    now,
-                    scroll,
-                    compact=compact,
-                    shake=shake,
-                ),
-            )
-        return text
-
     def _set_sprite_image(
         self,
         widget: TerminalImage,
@@ -904,7 +863,7 @@ class ArenaScreen(Screen[None]):
         if widget.image is not pic:
             widget.image = pic
 
-    def _refresh_foe_rows(  # noqa: PLR0913 - row rebind needs the render context
+    def _refresh_stage(  # noqa: PLR0913 - stage rebind needs the render context
         self,
         frame_tick: int,
         now: float,
@@ -914,48 +873,159 @@ class ArenaScreen(Screen[None]):
         shake: int,
         hit: bool,
     ) -> None:
-        """Bind one sprite+word row per foe; hidden rows release kitty ids.
+        """Paint the true-2D stage: kitty PNGs or the cells canvas.
 
-        Setting ``image = None`` runs the renderer's cleanup, so pooled
-        slots never hold stale true-pixel textures while hidden.
+        Core sits dead-center (stepping forward on wave clear); foes ring it
+        by sim angle and distance across the whole field. Hidden kitty slots
+        release their textures so pooled slots never hold stale sprites.
         """
         foes = self._arena.enemies
+        live = {foe.id for foe in foes}
+        self._spawned_at = {
+            key: born for key, born in self._spawned_at.items() if key in live
+        }
+        stage = self.query_one("#stage", Vertical)
+        width = stage.content_size.width
+        height = stage.content_size.height
+        if width <= 0 or height <= 0:
+            return
+        low = low_hp(self._arena.hp, self._arena.max_hp)
+        cx, cy = canvas_xy(angle=0.0, distance=0.0, width=width, height=height)
+        if self.advance_active:
+            cy = max(cy - 1, 0)
+        if self._pick.kind is RendererKind.KITTY:
+            self._refresh_kitty(
+                cx,
+                cy,
+                frame_tick,
+                now,
+                scroll,
+                compact=compact,
+                shake=shake,
+                hit=hit,
+            )
+            return
+        sprites: list[FieldSprite] = []
+        core_art = CORE_ART_HIT if low else CORE_ART
+        core_x, core_y = art_origin(cx, cy, core_art)
+        sprites.append(
+            FieldSprite(
+                x=core_x,
+                y=core_y,
+                art=core_art,
+                color=sprite_color(None, hit=low, mono=self.mono),
+                chip=Text(""),
+            ),
+        )
+        for foe in foes:
+            x, y = canvas_xy(
+                angle=foe.angle,
+                distance=foe.distance,
+                width=width,
+                height=height,
+                scroll=scroll,
+                compact=compact,
+            )
+            x = min(max(x + shake, 0), width - 1)
+            portal = now - self._spawned_at.get(foe.id, 0.0) < self._PORTAL_S
+            art = (
+                portal_art(boss=foe.kind is EnemyKind.BOSS)
+                if portal
+                else (CELL_ART_HIT[foe.kind] if hit else CELL_ART[foe.kind])
+            )
+            chip = self._chip_text(foe, frame_tick, now, shake=shake)
+            tx, ty = art_origin(x, y, art)
+            chip_x, chip_y = chip_origin(
+                tx,
+                ty,
+                art_w=len(art[0]),
+                art_h=(len(art) + 1) // 2,
+                chip_len=len(chip.plain),
+                width=width,
+            )
+            sprites.append(
+                FieldSprite(
+                    x=tx,
+                    y=ty,
+                    art=art,
+                    color=sprite_color(foe.kind, hit=hit, mono=self.mono),
+                    chip=chip,
+                    chip_x=chip_x,
+                    chip_y=chip_y,
+                ),
+            )
+        self.query_one("#field", ArenaCanvas).set_field(
+            render_field(width=width, height=height, sprites=tuple(sprites)),
+        )
+
+    def _refresh_kitty(  # noqa: PLR0913 - kitty rebind needs the render context
+        self,
+        cx: int,
+        cy: int,
+        frame_tick: int,
+        now: float,
+        scroll: int,
+        *,
+        compact: bool,
+        shake: int,
+        hit: bool,
+    ) -> None:
+        """Bind one absolute sprite+chip pair per foe; free hidden slots."""
+        stage = self.query_one("#stage", Vertical)
+        width = stage.content_size.width
+        core_widget = self.query_one("#core-sprite", TerminalImage)
         self._set_sprite_image(
-            self.query_one("#core-sprite", TerminalImage),
+            core_widget,
             core_sprite_file(
                 hit=low_hp(self._arena.hp, self._arena.max_hp),
                 tick=frame_tick,
             ),
         )
-        live = {foe.id for foe in foes}
-        self._spawned_at = {
-            key: born for key, born in self._spawned_at.items() if key in live
-        }
+        core_widget.styles.offset = (
+            cx - self._CORE_W // 2,
+            cy - self._CORE_H // 2,
+        )
+        foes = self._arena.enemies
         for index in range(MAX_FOES):
-            row = self.query_one(f"#foe-row-{index}", Horizontal)
             sprite = self.query_one(f"#foe-sprite-{index}", TerminalImage)
+            chip_label = self.query_one(f"#foe-word-{index}", Label)
             if index >= len(foes):
-                if row.display:
-                    row.display = False
+                if sprite.display:
                     sprite.display = False
+                    chip_label.display = False
                     if sprite.image is not None:
                         sprite.image = None
                 continue
-            row.display = True
+            foe = foes[index]
+            sprite.display = True
+            chip_label.display = True
             self._set_sprite_image(
                 sprite,
-                foe_sprite_file(foes[index].kind, hit=hit, tick=frame_tick),
+                foe_sprite_file(foe.kind, hit=hit, tick=frame_tick),
             )
-            self.query_one(f"#foe-word-{index}", Label).update(
-                self._foe_line(
-                    foes[index],
-                    frame_tick,
-                    now,
-                    scroll,
-                    compact=compact,
-                    shake=shake,
-                ),
+            x, y = canvas_xy(
+                angle=foe.angle,
+                distance=foe.distance,
+                width=width,
+                height=stage.content_size.height,
+                scroll=scroll,
+                compact=compact,
             )
+            x = min(max(x + shake, 0), width - 1)
+            tx = max(x - self._SPRITE_W // 2, 0)
+            ty = max(y - self._SPRITE_H // 2, 0)
+            sprite.styles.offset = (tx, ty)
+            chip = self._chip_text(foe, frame_tick, now, shake=shake)
+            chip_x, chip_y = chip_origin(
+                tx,
+                ty,
+                art_w=self._SPRITE_W,
+                art_h=self._SPRITE_H,
+                chip_len=len(chip.plain),
+                width=width,
+            )
+            chip_label.styles.offset = (chip_x, chip_y)
+            chip_label.update(chip)
 
     def _refresh_boss_bars(self) -> None:
         """Stacked ProgressBars: one full bar per remaining boss bar."""
@@ -1038,14 +1108,15 @@ class HubScreen(Screen[None]):
         "text-align: center; }\n"
         "#hub-center { height: 1fr; }\n"
         "#hub-column { width: 1fr; height: auto; align: center middle; }\n"
-        "#hub-banner { width: 1fr; height: 3; color: #FF2A2A; "
-        "text-style: bold; text-align: center; }\n"
+        "#hub-banner { width: 1fr; height: 5; color: #FF2A2A; "
+        "text-style: bold; text-align: center; content-align: center middle; "
+        "border: solid #952CF5; }\n"
         "#subtitle { width: 1fr; height: 1; color: #B57CFF; text-align: center; }\n"
-        "#hub-header { width: 80%; height: 4; border: solid #952CF5; }\n"
+        "#hub-header { width: 80%; height: 6; border: solid #952CF5; }\n"
         "#gold { width: 1fr; height: 1; color: #FFD23F; text-style: bold; "
         "text-align: center; }\n"
         "#hub-greeting { width: 1fr; height: 1; color: #CACACA; text-align: center; }\n"
-        "#hub-panel { width: 80%; height: 9; border: solid #952CF5; }\n"
+        "#hub-panel { width: 80%; height: 11; border: solid #952CF5; }\n"
         "#hub-list { width: 1fr; height: 6; }\n"
         "#hub-message { width: 1fr; height: 1; color: #FFD23F; }\n"
     )
