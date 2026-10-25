@@ -15,6 +15,7 @@ from textual.screen import Screen
 from textual.widgets import Label, ProgressBar
 
 from tsurv.arena import (
+    ArenaEnemy,
     ArenaState,
     EnemyKind,
     advance,
@@ -26,11 +27,23 @@ from tsurv.arena import (
     handle_keystroke,
     initial_arena,
     roll_drop,
+    seconds_to_impact,
     set_boss_wave,
     spawn_enemy,
 )
 from tsurv.combat import EnemyId, Kill, TypoStun, rolling_wpm, spawn_interval
 from tsurv.grammar import GrammarError, generate_boss_sentence
+from tsurv.juice import (
+    JuiceState,
+    apply_calibration,
+    calibrate_base_wpm,
+    is_bar_break,
+    low_hp,
+    step_juice,
+    telegraph_showing,
+    trigger_bar_break,
+    trigger_kill,
+)
 from tsurv.profile import Profile, RunSummary
 from tsurv.report import render_report
 from tsurv.screens import (
@@ -224,6 +237,7 @@ class ArenaScreen(Screen[None]):
         self._clock: float = 0.0
         self._wave_clock: float = 0.0
         self._kill_times: list[float] = []
+        self._juice: JuiceState = JuiceState()
         self._presses: int = 0
         self._hits: int = 0
         self._killer: str | None = None
@@ -278,6 +292,43 @@ class ArenaScreen(Screen[None]):
         """Seconds survived this run (feeds the recap duration)."""
         return self._run_clock
 
+    @property
+    def hit_stop_active(self) -> bool:
+        """Whether bar-break hit-stop currently freezes the sim."""
+        return self._juice.frozen_at(time.monotonic())
+
+    @property
+    def knockback_active(self) -> bool:
+        """Whether the knockback blast window is currently raised."""
+        return time.monotonic() < self._juice.knockback_until
+
+    @property
+    def slow_mo_active(self) -> bool:
+        """Whether the x8 streak slow-mo window is currently armed."""
+        return time.monotonic() < self._juice.slow_mo_until
+
+    @property
+    def flash_active(self) -> bool:
+        """Whether the bar-break white flash is currently showing."""
+        return time.monotonic() < self._juice.flash_until
+
+    @property
+    def particle_count(self) -> int:
+        """Live knockback motes (zero once the one-shot burst dies)."""
+        return len(self._juice.particles)
+
+    @property
+    def shake_active(self) -> bool:
+        """Whether trauma rattles the frame (honors the settings toggle)."""
+        if self._app_ref is not None and not self._app_ref.profile.settings.shake:
+            return False
+        return self._juice.shake_active
+
+    @property
+    def low_hp_pulse(self) -> bool:
+        """Whether vitals sit at/below the low-HP pulse threshold."""
+        return low_hp(self._arena.hp, self._arena.max_hp)
+
     def set_restored(self, state: ArenaState) -> None:
         """Replace the live arena with a checkpoint-restored snapshot."""
         self._arena = state
@@ -324,6 +375,10 @@ class ArenaScreen(Screen[None]):
         """Advance movement, leaks, waves, and spawns (pause/death gate it)."""
         if self.paused or self._arena.hp <= 0.0:
             return
+        self._juice = step_juice(self._juice, dt)
+        if self._juice.frozen_at(time.monotonic()):
+            self._refresh()
+            return
         self._run_clock += dt
         if self._practice:
             self._arena, leaked = practice_advance(self._arena, dt)
@@ -345,6 +400,7 @@ class ArenaScreen(Screen[None]):
         elif self._wave_clock >= WAVE_SECONDS:
             self._arena = replace(self._arena, wave=self._arena.wave + 1)
             self._wave_clock = 0.0
+            self._calibrate_wave()
         if self._spawn_enabled:
             self._clock += dt
             gap = spawn_interval(REF_WPM, rolling_wpm(self._kill_times, now))
@@ -402,6 +458,7 @@ class ArenaScreen(Screen[None]):
             self._hits += 1
             self._kill_times.append(now)
             self._resolve_drop(before, outcome.target)
+            self._juice_hit(before, outcome, now)
         elif not isinstance(outcome, TypoStun):
             self._hits += 1
         self._refresh()
@@ -441,6 +498,25 @@ class ArenaScreen(Screen[None]):
             return
         save_checkpoint(self._checkpoint_dir, snapshot(self._arena))
 
+    def _juice_hit(self, before: ArenaState, outcome: Kill, now: float) -> None:
+        """Raise the knockback blast for bar breaks, rattle for plain kills."""
+        foe = next((item for item in before.enemies if item.id == outcome.target), None)
+        if foe is None:
+            return
+        if is_bar_break(foe.kind, foe.hp_words):
+            self._juice = trigger_bar_break(self._juice, now, self._rng)
+        else:
+            self._juice = trigger_kill(self._juice, outcome.streak, now)
+
+    def _calibrate_wave(self) -> None:
+        """Write the wave-1 measured base rate onto the profile once."""
+        if self._practice or not self._kill_times:
+            return
+        if self._app_ref is None or self._app_ref.profile.base_wpm is not None:
+            return
+        base = calibrate_base_wpm(tuple(self._kill_times))
+        self._app_ref.apply_profile(apply_calibration(self._app_ref.profile, base))
+
     def _resolve_drop(self, before: ArenaState, target: EnemyId) -> None:
         """Roll the drop table for a kill and auto-apply the pickup."""
         foe = next((item for item in before.enemies if item.id == target), None)
@@ -461,6 +537,8 @@ class ArenaScreen(Screen[None]):
         wpm = rolling_wpm(self._kill_times, now)
         accuracy = self._hits / self._presses if self._presses else 1.0
         vitals = f"HP {state.hp:.0f}  WPM {wpm:.0f}  x{state.streak}"
+        if low_hp(state.hp, state.max_hp):
+            vitals += " LOW"
         progress = f"wave {state.wave}  score {int(state.score)}  acc {accuracy:.0%}"
         self.query_one("#topbar", Label).update(Text(f"{vitals}  {progress}"))
         self._foes_render = self._foes_text()
@@ -485,6 +563,12 @@ class ArenaScreen(Screen[None]):
             death.update(Text(f"YOU DIED - slain by {self._killer} (press R)"))
         death.display = dead
 
+    def _telegraph_warn(self, foe: ArenaEnemy) -> str:
+        """Return the leak-warning marker for foes inside their 200ms window."""
+        if telegraph_showing(seconds_to_impact(foe.kind, foe.distance), foe.kind):
+            return "!"
+        return ""
+
     def _foes_text(self) -> Text:
         """Foe lines: half-block sprite glyph plus word (typed prefix lit)."""
         state = self._arena
@@ -492,7 +576,7 @@ class ArenaScreen(Screen[None]):
         for index, foe in enumerate(state.enemies):
             if index:
                 _ = text.append("\n")
-            prefix = f"{sprite_text(foe.kind)} "
+            prefix = f"{sprite_text(foe.kind)}{self._telegraph_warn(foe)} "
             raw = str(foe.word.text)
             if (
                 not self.mono

@@ -60,6 +60,11 @@ def _speed_of(kind: EnemyKind) -> float:
             assert_never(other)
 
 
+def seconds_to_impact(kind: EnemyKind, distance: float) -> float:
+    """Seconds until a foe at `distance` leaks (Task 7 telegraph hook)."""
+    return distance / _speed_of(kind)
+
+
 @dataclass(frozen=True, slots=True)
 class ArenaEnemy:
     """One foe: its kind, word, remaining bars, and threat distance."""

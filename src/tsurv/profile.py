@@ -98,6 +98,7 @@ class Profile(BaseModel):
     settings: Settings = Field(default_factory=Settings)
     per_key: dict[str, KeyStat] = Field(default_factory=dict)
     runs: tuple[RunSummary, ...] = ()
+    base_wpm: float | None = Field(default=None, ge=0.0)
 
     @model_validator(mode="after")
     def _check_palette(self) -> Self:
