@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 import os
 import random
 import time
 from dataclasses import replace
-from typing import TYPE_CHECKING, ClassVar, Final, override
+from enum import StrEnum
+from typing import TYPE_CHECKING, ClassVar, Final, assert_never, override
 
 from par_textual_image import TerminalImage
 from PIL import Image, ImageOps
@@ -65,6 +67,7 @@ from tsurv.metrics import (
 from tsurv.profile import Profile, RunSummary, weak_keys_for_spawn
 from tsurv.report import render_report
 from tsurv.screens import (
+    HELP_TEXT,
     SHOP_CATALOG,
     CheckpointError,
     ShopError,
@@ -98,6 +101,7 @@ from tsurv.visuals import (
     BOB_FPS,
     COMPACT_WIDTH,
     HUB_ENTRIES,
+    HubEntry,
     agitated,
     agitated_mark,
     ambient_line,
@@ -154,6 +158,42 @@ def sprite_image(filename: str) -> Image.Image | None:
 
 MAX_BOSS_BARS: Final = 6
 """Stacked ProgressBar pool; boss HP above this clamps the display."""
+
+HUB_COLUMN_MAX: Final = 120
+"""Ultrawide hub cap: the menu column never sprawls past this (mirrors CSS)."""
+
+
+class PauseAction(StrEnum):
+    """Pause menu verbs: resume, help, settings, suspend-and-hub, quit."""
+
+    RESUME = "RESUME"
+    HOW_TO = "HOW_TO"
+    SETTINGS = "SETTINGS"
+    SUSPEND_HUB = "SUSPEND_HUB"
+    QUIT = "QUIT"
+
+
+PAUSE_ENTRIES: Final[tuple[HubEntry, ...]] = (
+    HubEntry(key="R", label="Resume", hint="back to the run"),
+    HubEntry(key="H", label="How to Play", hint="goal, keys, mercy"),
+    HubEntry(key="E", label="Settings", hint="palette, sound, shake"),
+    HubEntry(key="S", label="Suspend & Hub", hint="save and leave to menu"),
+    HubEntry(key="Q", label="Quit", hint="leave the void quietly"),
+)
+"""Pause menu rows: the five brief options in row order (j/k + Enter)."""
+
+_PAUSE_KEYS: Final[dict[str, PauseAction]] = {
+    "r": PauseAction.RESUME,
+    "h": PauseAction.HOW_TO,
+    "e": PauseAction.SETTINGS,
+    "s": PauseAction.SUSPEND_HUB,
+    "q": PauseAction.QUIT,
+}
+
+
+def pause_action_for(key: str) -> PauseAction | None:
+    """Map a pause-menu key to its verb; anything else is not an action."""
+    return _PAUSE_KEYS.get(key.lower())
 
 
 MAX_FOES: Final = 8
@@ -377,6 +417,8 @@ class ArenaScreen(Screen[None]):
         "#fx { width: 1fr; height: 1; color: #FFD23F; }\n"
         "#pixdiag { width: 1fr; height: 1; color: #24AEEB; text-align: center; }\n"
         "#botrail { width: 1fr; height: 1; color: #CACACA; }\n"
+        "#pause { width: 1fr; height: auto; color: #FFD23F; "
+        "border: solid #952CF5; text-align: center; }\n"
         "#typing { width: 1fr; height: 3; border: solid #952CF5; dock: bottom; "
         "color: #CACACA; }\n"
         "#stun { height: 1; color: #FFD23F; }\n"
@@ -449,6 +491,8 @@ class ArenaScreen(Screen[None]):
         self._last_wave: int = state.wave
         self._advance_until: float = 0.0
         self._drift_until: float = 0.0
+        self._pause_selected: int = 0
+        self._pause_help: bool = False
 
     @property
     def arena_state(self) -> ArenaState:
@@ -625,6 +669,7 @@ class ArenaScreen(Screen[None]):
         yield Label("", id="fx")
         yield Label("", id="pixdiag")
         yield Label("", id="botrail")
+        yield Label("", id="pause")
         yield Label("", id="typing")
         yield Label("", id="stun")
         yield Label("widen to 80+ columns to play", id="guard")
@@ -676,7 +721,17 @@ class ArenaScreen(Screen[None]):
         return replace(state, enemies=(*state.enemies[:-1], placed))
 
     def tick(self, dt: float = 1 / 60) -> None:
-        """Advance movement, leaks, waves, and spawns (pause/death gate it)."""
+        """Advance movement, leaks, waves, and spawns (pause/death gate it).
+
+        The panic path never propagates: a raising update autosuspends the
+        run and lands on the hub instead of dumping a traceback.
+        """
+        try:
+            self._step(dt)
+        except Exception as exc:  # noqa: BLE001 - panic path catches everything
+            self._crash(exc)
+
+    def _step(self, dt: float = 1 / 60) -> None:
         if self.paused or self._arena.hp <= 0.0:
             return
         self._juice = step_juice(self._juice, dt)
@@ -779,7 +834,16 @@ class ArenaScreen(Screen[None]):
         """Type-to-target: printable chars feed the arena, P pauses."""
         ch = event.character
         if event.key == "escape":
+            if self.paused:
+                self.paused = False
+                self._pause_help = False
+                self._refresh()
+                return
             self._arena = clear_lock(self._arena)
+            self._refresh()
+            return
+        if event.key == "enter" and self.paused:
+            self._activate_selected()
             self._refresh()
             return
         if ch is None or self._handle_command_key(ch):
@@ -806,14 +870,15 @@ class ArenaScreen(Screen[None]):
         self._refresh()
 
     def _handle_command_key(self, ch: str) -> bool:
-        """Pause, suspend, and death-recap keys; True when fully handled."""
+        """Pause menu, suspend, and death-recap keys; True when fully handled."""
         if ch == "P" and (self.paused or not self._expects_upper_p()):
             self.paused = not self.paused
+            if not self.paused:
+                self._pause_help = False
             self._refresh()
             return True
         if self.paused:
-            if ch == "S":
-                self._suspend()
+            self._handle_paused_key(ch)
             return True
         if len(ch) != 1 or not ch.isprintable():
             return True
@@ -822,6 +887,58 @@ class ArenaScreen(Screen[None]):
                 _ = self._app_ref.push_screen(self._app_ref.report_screen())
             return True
         return False
+
+    def _handle_paused_key(self, ch: str) -> None:
+        """Route one paused key: j/k move, P/R resume, rest hit menu verbs."""
+        lowered = ch.lower()
+        if lowered in ("p", "r"):
+            self.paused = False
+            self._pause_help = False
+        elif lowered == "j":
+            self._pause_selected = (self._pause_selected + 1) % len(PAUSE_ENTRIES)
+        elif lowered == "k":
+            self._pause_selected = (self._pause_selected - 1) % len(PAUSE_ENTRIES)
+        else:
+            action = pause_action_for(ch)
+            if action is not None:
+                self._activate_pause_action(action)
+        self._refresh()
+
+    def _activate_selected(self) -> None:
+        """Run the highlighted pause row (keys mirror _PAUSE_KEYS)."""
+        action = pause_action_for(PAUSE_ENTRIES[self._pause_selected].key)
+        if action is None:
+            return
+        self._activate_pause_action(action)
+
+    def _activate_pause_action(self, action: PauseAction) -> None:
+        """Run one pause verb (exhaustive over PauseAction)."""
+        match action:
+            case PauseAction.RESUME:
+                self.paused = False
+                self._pause_help = False
+            case PauseAction.HOW_TO:
+                self._pause_help = not self._pause_help
+            case PauseAction.SETTINGS:
+                if self._app_ref is not None:
+                    self._app_ref.open_settings()
+            case PauseAction.SUSPEND_HUB:
+                self._suspend()
+                if self._app_ref is not None:
+                    self._app_ref.suspend_to_hub()
+            case PauseAction.QUIT:
+                if self._app_ref is not None:
+                    self._app_ref.exit()
+            case _:
+                assert_never(action)
+        self._refresh()
+
+    def _crash(self, exc: Exception) -> None:
+        """Panic path: save the wave, then land on the hub (never a traceback)."""
+        with contextlib.suppress(CheckpointError):
+            self._suspend()
+        if self._app_ref is not None:
+            self._app_ref.crash_to_hub(str(exc) or type(exc).__name__)
 
     def _expects_upper_p(self) -> bool:
         """Report whether the live lock next expects a literal 'P'."""
@@ -945,6 +1062,22 @@ class ArenaScreen(Screen[None]):
         if dead and self._killer is not None:
             death.update(Text(f"YOU DIED - slain by {self._killer} (press R)"))
         death.display = dead
+        self._refresh_pause()
+
+    def _refresh_pause(self) -> None:
+        """Paint the pause overlay while paused (hidden otherwise)."""
+        panel = self.query_one("#pause", Label)
+        panel.display = self.paused
+        if not self.paused:
+            return
+        hint = "PAUSED — R resume · H help · E settings · S suspend · Q quit\n"
+        menu = Text(hint)
+        _ = menu.append_text(
+            hub_list_text(PAUSE_ENTRIES, self._pause_selected, mono=self.mono),
+        )
+        if self._pause_help:
+            _ = menu.append(f"\n{HELP_TEXT}")
+        panel.update(menu)
 
     def _drift_scroll(self, now: float) -> int:
         """Background pan after a wave clears: 3 cells easing back to rest."""
@@ -1330,6 +1463,7 @@ class HubScreen(Screen[None]):
         "text-align: center; }\n"
         "#hub-center { height: 1fr; }\n"
         "#hub-column { width: 1fr; height: auto; align: center middle; }\n"
+        f"#hub-column {{ max-width: {HUB_COLUMN_MAX}; }}\n"
         "#hub-logo { width: 1fr; height: auto; text-align: center; }\n"
         "#hub-banner { width: 1fr; height: 3; color: #FF2A2A; "
         "text-style: bold; text-align: center; content-align: center middle; }\n"
@@ -1390,10 +1524,18 @@ class HubScreen(Screen[None]):
             yield Label(hub_footer(self._app_ref.profile), id="hub-stats")
 
     def on_mount(self) -> None:
-        """Paint the selectable list, then decrypt the tagline once per boot."""
+        """Paint the list, pin any panic banner, then decrypt the tagline."""
         self._refresh_hub()
+        if self._app_ref.crash_message is not None:
+            self.show_crash(self._app_ref.crash_message)
         if self._app_ref.claim_hub_intro():
             self._play_decrypt()
+
+    def show_crash(self, message: str) -> None:
+        """Pin the panic banner: the error plus the resume-where-you-left-off hint."""
+        self.query_one("#hub-message", Label).update(
+            f"crashed: {message} — resume where you left off (R)",
+        )
 
     def on_resize(self, _event: events.Resize) -> None:
         """Re-bake the logo so a resized hub keeps the column fitting."""
@@ -1626,6 +1768,12 @@ class TypeSurvivorsApp(App[None]):
         self._start_at_hub: bool = start_at_hub
         self._resume: bool = resume
         self._hub_intro_played: bool = False
+        self._crash_message: str | None = None
+
+    @property
+    def crash_message(self) -> str | None:
+        """Last panic banner (the hub shows it until the next clean launch)."""
+        return self._crash_message
 
     def claim_hub_intro(self) -> bool:
         """Consume the one-shot hub decrypt intro (True on the first call)."""
@@ -1695,6 +1843,21 @@ class TypeSurvivorsApp(App[None]):
             _ = self.pop_screen()
         if not isinstance(self.screen, ArenaScreen):
             self.start_run()
+
+    def suspend_to_hub(self) -> None:
+        """Drop screens down to the hub, pushing one when none is below."""
+        while len(self.screen_stack) > 1 and not isinstance(self.screen, HubScreen):
+            _ = self.pop_screen()
+        if not isinstance(self.screen, HubScreen):
+            _ = self.push_screen(HubScreen(self))
+
+    def crash_to_hub(self, message: str) -> None:
+        """Panic landing: keep the message, show the hub with its resume hint."""
+        self._crash_message = message
+        self.suspend_to_hub()
+        screen = self.screen
+        if isinstance(screen, HubScreen) and screen.is_mounted:
+            screen.show_crash(message)
 
     def _live_arena(self) -> ArenaScreen:
         """Return the arena screen, assuming one is on the stack."""
