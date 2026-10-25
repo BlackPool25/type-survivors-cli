@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final, NewType
+from typing import TYPE_CHECKING, Final, NewType, assert_never
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -204,18 +204,14 @@ def apply_keystroke(  # noqa: PLR0913, PLR0917 - seven explicit params per rulin
 
 
 def keystroke_target(result: Keystroke) -> EnemyId | None:
-    """Extract the locked enemy from any keystroke outcome (exhaustive).
-
-    Every variant assigns `target`, so adding a union member without a
-    case is a type error (possibly-unbound) rather than a silent fallthrough.
-    """
-    target: EnemyId | None
-    match result:
-        case Advanced() | Kill():
-            target = result.target
-        case TypoStun() | NoTarget():
-            target = None
-    return target
+    """Extract the locked enemy from any keystroke outcome (exhaustive)."""
+    if isinstance(result, (Advanced, Kill)):
+        return result.target
+    if isinstance(result, TypoStun):
+        return None
+    if isinstance(result, NoTarget):  # pyright: ignore[reportUnnecessaryIsInstance]
+        return None
+    assert_never(result)
 
 
 def rolling_wpm(events: Sequence[float], now: float) -> float:
