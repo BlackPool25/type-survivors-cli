@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import random
 import time
@@ -68,18 +69,24 @@ from tsurv.visuals import (
     BOB_FPS,
     COMPACT_WIDTH,
     HUB_ENTRIES,
+    agitated,
+    agitated_mark,
     ambient_line,
-    approach_indent,
     core_sprite_file,
     foe_hit_showing,
+    foe_mark,
+    foe_plate_text,
     foe_sprite_file,
     fx_line,
     hub_banner_text,
     hub_greeting,
     hub_list_text,
     juice_overlay,
+    portal_mark,
+    radial_indent,
     shop_row_text,
     sprite_path,
+    tier_pips,
 )
 from tsurv.words import (
     TIER_WORDS,
@@ -117,6 +124,7 @@ def sprite_image(filename: str) -> Image.Image | None:
 
 MAX_BOSS_BARS: Final = 6
 """Stacked ProgressBar pool; boss HP above this clamps the display."""
+
 
 MAX_FOES: Final = 8
 """On-screen enemy cap, bounding layout and difficulty."""
@@ -222,16 +230,44 @@ class ArenaScreen(Screen[None]):
     # Blood Neon Void values reused from hub.tcss (same hexes). hub.tcss
     # itself is not loaded: its $panel variable collides with Textual 8
     # App.DEFAULT_CSS ("hatch: right $panel") and breaks stylesheet parsing.
+    _GOLDEN_ANGLE: ClassVar[float] = math.pi * (3.0 - math.sqrt(5.0))
+    """Spawn ring spread: each foe lands ~137.5° from the last, no clumping."""
+
+    _SPAWN_JITTER: ClassVar[float] = 0.3
+    """Spawn ring looseness (radians): the ring reads organic, not clockwork."""
+
+    _PORTAL_S: ClassVar[float] = 0.3
+    """Spawn portal lifetime: telegraph obeys the >=200ms readability rule."""
+
+    _BOSS_BANNER_S: ClassVar[float] = 2.5
+    """Boss banner hold: the OVERLORD warning outlives the screen shake."""
+
+    _ADVANCE_S: ClassVar[float] = 0.5
+    """Core advance length: the MC visibly steps forward, drift sells motion."""
+
+    _ADVANCE_DRIFT_CELLS: ClassVar[int] = 3
+    """Background pan width after a wave clears, easing back to rest."""
+
+    _ADVANCE_DRIFT_S: ClassVar[float] = 2.0
+    """Pan ease length: the drift outlives the step so motion reads."""
+
+    _HALF_FOES: ClassVar[int] = 4
+    """Half the foe slots hang below the core: the ring reads above and below."""
+
     CSS: ClassVar[str] = (
         "Screen { background: #0B0B12; color: #CACACA; }\n"
         "#topbar { width: 1fr; height: 3; border: solid #952CF5; color: #CACACA; }\n"
         "#arena { height: 1fr; border: solid #952CF5; }\n"
         "#foes { height: 1fr; }\n"
+        "#foes-above { height: 1fr; }\n"
+        "#foes-below { height: 1fr; }\n"
         ".foe-row { height: 3; }\n"
         ".foe-row TerminalImage { width: 10; height: 3; }\n"
         ".foe-word { width: 1fr; height: 3; content-align: left middle; }\n"
-        "#core-row { height: 3; align: center middle; }\n"
-        "#core-row TerminalImage { width: 10; height: 3; }\n"
+        "#core-row { height: 4; align: center middle; }\n"
+        "#core-row TerminalImage { width: 12; height: 4; }\n"
+        "#bossbanner { width: 1fr; height: 2; color: #FF2A2A; "
+        "text-style: bold; text-align: center; }\n"
         f"#bossbars {{ height: {MAX_BOSS_BARS}; }}\n"
         "#fx { width: 1fr; height: 1; color: #FFD23F; }\n"
         "#typing { width: 1fr; height: 3; border: solid #952CF5; dock: bottom; "
@@ -255,6 +291,10 @@ class ArenaScreen(Screen[None]):
     ) -> None:
         """Seed the arena; tests inject words and disable the spawner."""
         super().__init__()
+        self._spawned_total: int = 0
+        self._spawned_at: dict[EnemyId, float] = {}
+        self._rng: random.Random = random.Random(seed)  # noqa: S311 - gameplay RNG
+        self._juice: JuiceState = JuiceState()
         state = initial_arena(hp=_START_HP)
         for text in initial_words:
             state = spawn_enemy(
@@ -262,6 +302,7 @@ class ArenaScreen(Screen[None]):
                 Word(text=WordText(text), tier=Tier.T1),
                 distance=5.0,
             )
+            state = self._place_last(state)
         if initial_boss is not None:
             state = set_boss_wave(state, flag=True)
             state = spawn_enemy(
@@ -271,11 +312,14 @@ class ArenaScreen(Screen[None]):
                 hp_words=2,
                 distance=8.0,
             )
+            state = self._place_last(state)
+            now = time.monotonic()
+            self._boss_banner_until = now + self._BOSS_BANNER_S
+            self._juice = replace(self._juice, trauma=1.0)
         self._arena: ArenaState = state
         self._app_ref: TypeSurvivorsApp | None = app
         self._spawn_enabled: bool = spawn_enabled
         self._weak_keys: tuple[str, ...] = weak_keys
-        self._rng: random.Random = random.Random(seed)  # noqa: S311 - gameplay RNG
         self._boss_sentences: set[str] = set()
         self.paused: bool = False
         self._practice: bool = practice
@@ -285,7 +329,6 @@ class ArenaScreen(Screen[None]):
         self._clock: float = 0.0
         self._wave_clock: float = 0.0
         self._kill_times: list[float] = []
-        self._juice: JuiceState = JuiceState()
         self._presses: int = 0
         self._hits: int = 0
         self._killer: str | None = None
@@ -294,11 +337,37 @@ class ArenaScreen(Screen[None]):
             ProgressBar(total=1, show_bar=True, show_percentage=False)
             for _ in range(MAX_BOSS_BARS)
         ]
+        self._last_wave: int = state.wave
+        self._boss_banner_until: float = 0.0
+        self._advance_until: float = 0.0
+        self._drift_until: float = 0.0
 
     @property
     def arena_state(self) -> ArenaState:
         """Current pure arena state (tests read score/foes through this)."""
         return self._arena
+
+    @property
+    def advance_active(self) -> bool:
+        """Whether the core's wave-clear step-forward is still playing."""
+        return time.monotonic() < self._advance_until
+
+    @property
+    def boss_banner_text(self) -> str:
+        """Live boss banner line (empty once the announce window lapses)."""
+        if time.monotonic() >= self._boss_banner_until:
+            return ""
+        names = [
+            str(foe.word.text).upper()
+            for foe in self._arena.enemies
+            if foe.kind is EnemyKind.BOSS
+        ]
+        return f"OVERLORD APPROACHES{f' - {names[0]}' if names else ''}"
+
+    @property
+    def foe_angles(self) -> tuple[float, ...]:
+        """Spawn-ring angles in enemy order (render-owned, sim-neutral)."""
+        return tuple(foe.angle for foe in self._arena.enemies)
 
     @property
     def score_value(self) -> int:
@@ -385,15 +454,21 @@ class ArenaScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         """Header, foe sprite+word rows, core, boss bars, fx, typing, flags."""
         yield Label("", id="topbar")
+        yield Label("", id="bossbanner")
         with Vertical(id="arena"):
             with Vertical(id="foes"):
-                for index in range(MAX_FOES):
-                    with Horizontal(id=f"foe-row-{index}", classes="foe-row"):
-                        yield TerminalImage(id=f"foe-sprite-{index}")
-                        yield Label("", id=f"foe-word-{index}", classes="foe-word")
-            with Horizontal(id="core-row"):
-                yield TerminalImage(id="core-sprite")
-                yield Label("SANCTUARY CORE", id="core-line")
+                with Vertical(id="foes-above"):
+                    for index in range(self._HALF_FOES):
+                        with Horizontal(id=f"foe-row-{index}", classes="foe-row"):
+                            yield TerminalImage(id=f"foe-sprite-{index}")
+                            yield Label("", id=f"foe-word-{index}", classes="foe-word")
+                with Horizontal(id="core-row"):
+                    yield TerminalImage(id="core-sprite")
+                with Vertical(id="foes-below"):
+                    for index in range(self._HALF_FOES, MAX_FOES):
+                        with Horizontal(id=f"foe-row-{index}", classes="foe-row"):
+                            yield TerminalImage(id=f"foe-sprite-{index}")
+                            yield Label("", id=f"foe-word-{index}", classes="foe-word")
             with Vertical(id="bossbars"):
                 yield from self._boss_bars
         yield Label("", id="fx")
@@ -428,7 +503,24 @@ class ArenaScreen(Screen[None]):
             Word(text=WordText(text), tier=Tier.T1),
             distance=distance,
         )
+        self._arena = self._place_last(self._arena)
         self._refresh()
+
+    def _deal_angle(self) -> float:
+        """Golden-angle ring slot plus jitter: spawns surround, never stack."""
+        angle = self._spawned_total * self._GOLDEN_ANGLE
+        angle += self._rng.uniform(-self._SPAWN_JITTER, self._SPAWN_JITTER)
+        return angle % (2.0 * math.pi)
+
+    def _place_last(self, state: ArenaState) -> ArenaState:
+        """Deal the newest foe its ring angle; sim movement never reads it."""
+        if not state.enemies:
+            return state
+        foe = state.enemies[-1]
+        placed = replace(foe, angle=self._deal_angle())
+        self._spawned_total += 1
+        self._spawned_at[placed.id] = time.monotonic()
+        return replace(state, enemies=(*state.enemies[:-1], placed))
 
     def tick(self, dt: float = 1 / 60) -> None:
         """Advance movement, leaks, waves, and spawns (pause/death gate it)."""
@@ -493,6 +585,10 @@ class ArenaScreen(Screen[None]):
                 hp_words=bars,
                 distance=8.0,
             )
+            self._arena = self._place_last(self._arena)
+            now = time.monotonic()
+            self._boss_banner_until = now + self._BOSS_BANNER_S
+            self._juice = replace(self._juice, trauma=1.0)
             return
         tier = mercy_tier(
             Tier.T1 if self._arena.wave <= 1 else Tier.T2,
@@ -512,6 +608,7 @@ class ArenaScreen(Screen[None]):
         )
         kind = EnemyKind.GRUNT if len(shown) % 3 else EnemyKind.MITE
         self._arena = spawn_enemy(self._arena, word, kind=kind)
+        self._arena = self._place_last(self._arena)
 
     async def on_key(self, event: events.Key) -> None:
         """Type-to-target: printable chars feed the arena, P pauses."""
@@ -624,18 +721,33 @@ class ArenaScreen(Screen[None]):
             vitals += " SLO-MO"
         progress = f"wave {state.wave}  score {int(state.score)}  acc {accuracy:.0%}"
         self.query_one("#topbar", Label).update(Text(f"{vitals}  {progress}"))
+        if state.wave != self._last_wave:
+            self._last_wave = state.wave
+            self._advance_until = now + self._ADVANCE_S
+            self._drift_until = now + self._ADVANCE_DRIFT_S
+        banner = self.query_one("#bossbanner", Label)
+        banner.update(Text(self.boss_banner_text))
+        banner.display = self.boss_banner_text != ""
         self._foes_render = self._foes_text(
             frame_tick,
+            now,
+            self._drift_scroll(now),
             compact=compact,
             shake=overlay.shake,
         )
         self._refresh_foe_rows(
             frame_tick,
+            now,
+            self._drift_scroll(now),
             compact=compact,
             shake=overlay.shake,
             hit=hit,
         )
-        ribbon = fx_line(overlay) or ambient_line(max(self.size.width, 1), frame_tick)
+        ribbon = fx_line(overlay, advancing=self.advance_active) or ambient_line(
+            max(self.size.width, 1),
+            frame_tick,
+            boost=2 if self.advance_active else 1,
+        )
         self.query_one("#fx", Label).update(Text(ribbon))
         self._refresh_boss_bars()
         if state.current is None:
@@ -657,47 +769,102 @@ class ArenaScreen(Screen[None]):
             death.update(Text(f"YOU DIED - slain by {self._killer} (press R)"))
         death.display = dead
 
+    def _drift_scroll(self, now: float) -> int:
+        """Background pan after a wave clears: 3 cells easing back to rest."""
+        remaining = self._drift_until - now
+        if remaining <= 0.0:
+            return 0
+        return round(self._ADVANCE_DRIFT_CELLS * remaining / self._ADVANCE_DRIFT_S)
+
     def _telegraph_warn(self, foe: ArenaEnemy) -> str:
         """Return the leak-warning marker for foes inside their 200ms window."""
         if telegraph_showing(seconds_to_impact(foe.kind, foe.distance), foe.kind):
             return "!"
         return ""
 
-    def _foe_line(
+    def _foe_line(  # noqa: PLR0913 - one foe row needs its full render context
         self,
         foe: ArenaEnemy,
         frame_tick: int = 0,
+        now: float = 0.0,
+        scroll: int = 0,
         *,
         compact: bool = False,
         shake: int = 0,
     ) -> Text:
-        """One foe row: approach indent, sprite glyph, word (prefix lit).
+        """One foe row: ring indent, sprite, plate (pips + word + mark).
 
-        The PNG pool carries the hit-flash frame; the glyph never changes so
-        glyph identity survives even where true-pixel cannot render.
+        Portal foes show the spawn glyph while scaling in; agitated foes
+        (inside ``AGITATED_DISTANCE``) bob double-time with a warning mark
+        and a red plate. The typed-lock highlight survives on the word.
         """
         text = Text()
-        drift = approach_indent(foe.distance, compact=compact)
-        prefix = f"{' ' * shake}{drift}{sprite_text(foe.kind, frame_tick)}"
-        prefix += f"{self._telegraph_warn(foe)} "
         raw = str(foe.word.text)
-        state = self._arena
-        if not self.mono and foe.id == state.current and 0 < state.typed <= len(raw):
-            _ = text.append(prefix)
-            _ = text.append(raw[: state.typed], style=HP_GREEN)
-            _ = text.append(
-                raw[state.typed : state.typed + 1],
-                style=f"underline {GOLD_NEXT}",
-            )
-            _ = text.append(raw[state.typed + 1 :])
+        agit = agitated(foe.distance)
+        rate = 2 if agit else 1
+        glyph = sprite_text(foe.kind, frame_tick * rate)
+        width = max(self.size.width, 1)
+        plate = foe_plate_text(
+            raw,
+            kind=foe.kind,
+            tier=foe.word.tier,
+            corruption=foe.word.corruption,
+            hp_words=foe.hp_words,
+        )
+        indent = radial_indent(
+            angle=foe.angle,
+            distance=foe.distance,
+            width=width,
+            plate_len=len(glyph) + 1 + len(plate),
+            compact=compact,
+            scroll=scroll,
+        )
+        spawned = self._spawned_at.get(foe.id, 0.0)
+        prefix = f"{' ' * shake}{indent}"
+        if now - spawned < self._PORTAL_S:
+            prefix += f"{portal_mark()}{self._telegraph_warn(foe)} "
         else:
-            # Mono strips color only: corruption still reads via glyphs.
-            _ = text.append(prefix + corrupted_display(foe.word))
+            prefix += f"{glyph}{' ' if frame_tick % 2 else ''}"
+            if agit:
+                prefix += agitated_mark()
+            prefix += self._telegraph_warn(foe)
+            prefix += " "
+        state = self._arena
+        locked = foe.id == state.current and 0 < state.typed <= len(raw)
+        if self.mono or not locked:
+            # Mono strips color only: pips and marks still read via glyphs.
+            globe = corrupted_display(foe.word)
+            replated = foe_plate_text(
+                globe,
+                kind=foe.kind,
+                tier=foe.word.tier,
+                corruption=foe.word.corruption,
+                hp_words=foe.hp_words,
+            )
+            if agit and not self.mono:
+                _ = text.append(prefix)
+                _ = text.append(replated, style="bold #FF2A2A")
+            else:
+                _ = text.append(prefix + replated)
+            return text
+        head = "●" * (
+            foe.hp_words if foe.kind is EnemyKind.BOSS else tier_pips(foe.word.tier)
+        )
+        _ = text.append(f"{prefix}{head} " if head else prefix)
+        _ = text.append(raw[: state.typed], style=HP_GREEN)
+        _ = text.append(
+            raw[state.typed : state.typed + 1],
+            style=f"underline {GOLD_NEXT}",
+        )
+        _ = text.append(raw[state.typed + 1 :])
+        _ = text.append(f" {foe_mark(foe.kind, foe.word.corruption)}")
         return text
 
     def _foes_text(
         self,
         frame_tick: int = 0,
+        now: float = 0.0,
+        scroll: int = 0,
         *,
         compact: bool = False,
         shake: int = 0,
@@ -708,7 +875,14 @@ class ArenaScreen(Screen[None]):
             if index:
                 _ = text.append("\n")
             _ = text.append_text(
-                self._foe_line(foe, frame_tick, compact=compact, shake=shake),
+                self._foe_line(
+                    foe,
+                    frame_tick,
+                    now,
+                    scroll,
+                    compact=compact,
+                    shake=shake,
+                ),
             )
         return text
 
@@ -728,9 +902,11 @@ class ArenaScreen(Screen[None]):
         if widget.image is not pic:
             widget.image = pic
 
-    def _refresh_foe_rows(
+    def _refresh_foe_rows(  # noqa: PLR0913 - row rebind needs the render context
         self,
         frame_tick: int,
+        now: float,
+        scroll: int,
         *,
         compact: bool,
         shake: int,
@@ -749,6 +925,10 @@ class ArenaScreen(Screen[None]):
                 tick=frame_tick,
             ),
         )
+        live = {foe.id for foe in foes}
+        self._spawned_at = {
+            key: born for key, born in self._spawned_at.items() if key in live
+        }
         for index in range(MAX_FOES):
             row = self.query_one(f"#foe-row-{index}", Horizontal)
             sprite = self.query_one(f"#foe-sprite-{index}", TerminalImage)
@@ -765,7 +945,14 @@ class ArenaScreen(Screen[None]):
                 foe_sprite_file(foes[index].kind, hit=hit, tick=frame_tick),
             )
             self.query_one(f"#foe-word-{index}", Label).update(
-                self._foe_line(foes[index], frame_tick, compact=compact, shake=shake),
+                self._foe_line(
+                    foes[index],
+                    frame_tick,
+                    now,
+                    scroll,
+                    compact=compact,
+                    shake=shake,
+                ),
             )
 
     def _refresh_boss_bars(self) -> None:

@@ -89,6 +89,7 @@ class ArenaEnemy:
     word: Word
     hp_words: int
     distance: float
+    angle: float = 0.0
 
     def to_combat(self) -> EnemyState:
         """Project onto the combat core's enemy view."""

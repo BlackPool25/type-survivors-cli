@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import random
 from dataclasses import replace
+from itertools import pairwise
 from typing import Final
 
 from par_textual_image import TerminalImage
@@ -26,14 +28,18 @@ from tsurv.visuals import (
     approach_indent,
     core_sprite_file,
     foe_hit_showing,
+    foe_mark,
     foe_sprite_file,
     fx_line,
     hub_banner_text,
     hub_greeting,
     hub_list_text,
     juice_overlay,
+    portal_mark,
     shop_row_text,
+    tier_pips,
 )
+from tsurv.words import Corruption, Tier
 
 _SEED: Final = 7
 _NOW: Final = 100.0
@@ -48,6 +54,16 @@ _GUARD_CELLS: Final = 2
 """True-pixel guard: widget content must clear 2 cells on every protocol."""
 _CORE_OFF_TOLERANCE: Final = 8
 """Core sprite center may trail the row center by half a word chip."""
+_CORE_CELLS_W: Final = 12
+"""Core widget width: the Sanctuary Core renders large, never a label."""
+_CORE_CELLS_H: Final = 4
+"""Core widget height: the Sanctuary Core renders large, never a label."""
+_CORE_CENTER_TOL: Final = 2
+"""Core sprite center sits on the viewport centre within two cells."""
+_RING_SPAWNS: Final = 8
+"""Ring-spread pilot fills every foe slot."""
+_RING_MIN_GAP: Final = 0.25
+"""Golden-angle spawn ring keeps neighbours well apart (measured 0.54)."""
 
 
 def test_foe_frames_alternate_idle_and_bob() -> None:
@@ -419,5 +435,153 @@ def test_pilot_guard_names_the_fix() -> None:
             assert plain.strip() != ""
             assert "80" in plain
             assert len(plain.strip()) < _NARROW_WIDTH
+
+    asyncio.run(_scenario())
+
+
+def test_foe_mark_covers_every_corruption_and_kind() -> None:
+    """Plate marks never blank: corruption wins, kind is the fallback."""
+    for corruption in Corruption:
+        for kind in EnemyKind:
+            assert foe_mark(kind, corruption) != ""
+    for tier in Tier:
+        assert tier_pips(tier) >= 1
+
+
+def test_pilot_core_centered_large() -> None:
+    """The Sanctuary Core renders large at the arena centre, never a label."""
+
+    async def _scenario(size: tuple[int, int]) -> None:
+        app = TypeSurvivorsApp(initial_words=("cat",), spawn_enabled=False, seed=_SEED)
+        async with app.run_test(size=size) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            width, _ = size
+            row = screen.query_one("#core-row", Horizontal)
+            assert len(list(row.children)) == 1
+            core = screen.query_one("#core-sprite", TerminalImage)
+            assert core.display
+            assert core.image is not None
+            assert core.region.width >= _CORE_CELLS_W
+            assert core.region.height >= _CORE_CELLS_H
+            center = core.region.x + core.region.width // 2
+            assert abs(center - width // 2) <= _CORE_CENTER_TOL
+
+    asyncio.run(_scenario((80, 24)))
+    asyncio.run(_scenario((120, 30)))
+
+
+def test_pilot_foe_angles_surround_core() -> None:
+    """Spawn ring angles spread around the core instead of stacking."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(initial_words=(), spawn_enabled=False, seed=_SEED)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            for word in ("aa", "bb", "cc", "dd", "ee", "ff", "gg", "hh"):
+                screen.spawn_test_enemy(word, distance=5.0)
+            angles = screen.foe_angles
+            assert len(angles) == _RING_SPAWNS
+            assert all(0.0 <= angle < 2 * math.pi for angle in angles)
+            ordered = sorted(angles)
+            gaps = [later - early for early, later in pairwise(ordered)]
+            gaps.append(ordered[0] + 2 * math.pi - ordered[-1])
+            assert min(gaps) > _RING_MIN_GAP
+
+    asyncio.run(_scenario())
+
+
+def test_pilot_plate_shows_pips_word_and_mark() -> None:
+    """Plates read `[pips] word [mark]`; the boss wears its HP-bar pips."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(
+            initial_words=("cat",),
+            initial_boss="overlord",
+            spawn_enabled=False,
+            seed=_SEED,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            assert "● cat >" in screen.foes_text
+            assert "●● overlord ☠" in screen.foes_text
+
+    asyncio.run(_scenario())
+
+
+def test_pilot_portal_precedes_plate() -> None:
+    """The spawn portal marks the foe before it settles into the ring."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(initial_words=(), spawn_enabled=False, seed=_SEED)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            screen.spawn_test_enemy("cat", distance=5.0)
+            first = screen.query_one("#foe-word-0", Label).content
+            first_plain = first.plain if isinstance(first, Text) else str(first)
+            assert portal_mark() in first_plain
+            await asyncio.sleep(0.35)
+            screen.tick(0.0)
+            second = screen.query_one("#foe-word-0", Label).content
+            second_plain = second.plain if isinstance(second, Text) else str(second)
+            assert portal_mark() not in second_plain
+            assert "cat" in second_plain
+
+    asyncio.run(_scenario())
+
+
+def test_pilot_boss_banner_and_shake() -> None:
+    """The boss entrance names itself full-width and rattles the frame."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(initial_words=(), spawn_enabled=True, seed=_SEED)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            screen.set_restored(replace(screen.arena_state, wave=BOSS_EVERY))
+            screen.tick(_BOSS_GAP_TICK)
+            assert screen.arena_state.boss_wave
+            assert "OVERLORD APPROACHES" in screen.boss_banner_text
+            banner = screen.query_one("#bossbanner", Label)
+            assert banner.display
+            content = banner.content
+            plain = content.plain if isinstance(content, Text) else str(content)
+            assert "OVERLORD APPROACHES" in plain
+            assert screen.shake_active
+            boss = next(
+                foe for foe in screen.arena_state.enemies if foe.kind is EnemyKind.BOSS
+            )
+            plate = f"{'●' * boss.hp_words} {boss.word.text} ☠"
+            assert plate in screen.foes_text
+
+    asyncio.run(_scenario())
+
+
+def test_pilot_wave_clear_steps_core_forward() -> None:
+    """A cleared wave steps the core forward and pans the background."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(initial_words=("cat",), spawn_enabled=False, seed=_SEED)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            assert not screen.advance_active
+            screen.set_restored(
+                replace(screen.arena_state, wave=screen.arena_state.wave + 1),
+            )
+            screen.tick(0.0)
+            assert screen.advance_active
+            ribbon = screen.query_one("#fx", Label).content
+            plain = ribbon.plain if isinstance(ribbon, Text) else str(ribbon)
+            assert "ADVANCES" in plain
 
     asyncio.run(_scenario())

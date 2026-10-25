@@ -8,12 +8,14 @@ through par-textual-image; this module only selects *what* shows.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import cos
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, assert_never
 
 from rich.text import Text
 
 from tsurv.arena import EnemyKind
+from tsurv.words import Corruption, Tier
 
 if TYPE_CHECKING:
     from tsurv.juice import JuiceState
@@ -50,6 +52,18 @@ _SLOW_MARK: Final = "SLO-MO"
 
 BOB_FPS: Final = 6
 """Sprite bob rate: idle/bob frames alternate six times a second."""
+
+AGITATED_DISTANCE: Final = 2.0
+"""Inside this distance a foe is agitated: double bob plus a warning mark."""
+
+RADIAL_STEP: Final = 2
+"""Cells of ring radius per distance unit: foes ring the centered core."""
+
+_PORTAL_MARK: Final = "◌"
+"""Spawn-portal glyph: shown while a foe scales in, before it closes in."""
+
+_AGITATED_MARK: Final = "»"
+"""Close-in warning: plain glyph so the threat reads in mono too."""
 
 _CORE_PULSE: Final = 4
 """Core pulse period in ticks: frame swap reads as breathing."""
@@ -159,6 +173,104 @@ def foe_hit_showing(juice: JuiceState, now: float) -> bool:
     return now < juice.flash_until
 
 
+def tier_pips(tier: Tier) -> int:
+    """Level pips for a word tier: harder tiers wear more filled pips."""
+    match tier:
+        case Tier.T1:
+            return 1
+        case Tier.T2:
+            return 2
+        case Tier.T3:
+            return 3
+        case Tier.CODE:
+            return 4
+        case Tier.BOSS:
+            return 3
+        case _:
+            assert_never(tier)
+
+
+_CORRUPTION_MARKS: Final[dict[Corruption, str]] = {
+    Corruption.CLEAN: "",
+    Corruption.REVERSED: "~",
+    Corruption.GLITCH: "※",
+    Corruption.ROT13: "§",
+}
+"""Corruption wins the plate mark; CLEAN falls through to the kind glyph."""
+
+
+def foe_mark(kind: EnemyKind, corruption: Corruption) -> str:
+    """One difficulty/corruption glyph: corruption wins, kind is the default."""
+    mark = _CORRUPTION_MARKS[corruption]
+    if mark:
+        return mark
+    match kind:
+        case EnemyKind.GRUNT:
+            return ">"
+        case EnemyKind.MITE:
+            return "»"
+        case EnemyKind.HEX:
+            return "◆"
+        case EnemyKind.ELITE:
+            return "◈"
+        case EnemyKind.BOSS:
+            return "☠"
+        case _:
+            assert_never(kind)
+
+
+def foe_plate_text(
+    word: str,
+    *,
+    kind: EnemyKind,
+    tier: Tier,
+    corruption: Corruption,
+    hp_words: int,
+) -> str:
+    """Enemy plate: `[pips] word [symbol]` in plain glyphs, mono-safe.
+
+    Bosses wear one pip per remaining HP bar instead of the tier count.
+    """
+    pips = hp_words if kind is EnemyKind.BOSS else tier_pips(tier)
+    return f"{'●' * pips} {word} {foe_mark(kind, corruption)}"
+
+
+def agitated(distance: float) -> bool:
+    """Report whether a foe is close enough to read as agitated."""
+    return distance < AGITATED_DISTANCE
+
+
+def radial_indent(  # noqa: PLR0913 - ring math needs angle, radius, framing
+    *,
+    angle: float,
+    distance: float,
+    width: int,
+    plate_len: int,
+    compact: bool,
+    scroll: int = 0,
+) -> str:
+    """Ring offset around the centered core: cos(angle) pushes east/west.
+
+    The plate centers on the viewport middle at zero radius; `scroll` adds
+    the wave-advance drift so the background pans as the core steps forward.
+    """
+    radius = min(int(distance * RADIAL_STEP), APPROACH_MAX)
+    if compact:
+        radius //= 2
+    center = max(width, 1) // 2 - plate_len // 2
+    return " " * max(0, center + round(cos(angle) * radius) + scroll)
+
+
+def portal_mark() -> str:
+    """Spawn-portal glyph for a foe still scaling into the ring."""
+    return _PORTAL_MARK
+
+
+def agitated_mark() -> str:
+    """Close-in warning glyph for an agitated foe."""
+    return _AGITATED_MARK
+
+
 def approach_indent(distance: float, *, compact: bool) -> str:
     """Spaces pushing far foes right so positions visibly glide core-ward."""
     steps = min(int(distance), APPROACH_MAX)
@@ -180,21 +292,27 @@ def juice_overlay(juice: JuiceState, now: float) -> JuiceOverlay:
     )
 
 
-def fx_line(overlay: JuiceOverlay) -> str:
+_ADVANCE_LINE: Final = "▲ ▲ ▲ SANCTUARY ADVANCES ▲ ▲ ▲"
+"""Wave-clear ribbon: the step-forward names itself while drift pans."""
+
+
+def fx_line(overlay: JuiceOverlay, *, advancing: bool = False) -> str:
     """Combine one tick of overlays into the single fx ribbon line."""
     parts = [overlay.beam, overlay.burst]
     if overlay.ring:
         parts.append(_RING_LINE)
     if overlay.slow:
         parts.append(_SLOW_MARK)
+    if advancing:
+        parts.append(_ADVANCE_LINE)
     return " ".join(part for part in parts if part)
 
 
-def ambient_line(width: int, tick: int) -> str:
+def ambient_line(width: int, tick: int, *, boost: int = 1) -> str:
     """Slow drifting void specks: deterministic in tick, behind gameplay."""
     cells = [" "] * max(width, 1)
     span = max(width, 1)
-    for seed in range(AMBIENT_SEEDS):
+    for seed in range(AMBIENT_SEEDS * boost):
         cells[(seed * 13 + tick // BOB_FPS) % span] = "·"
     return "".join(cells)
 
