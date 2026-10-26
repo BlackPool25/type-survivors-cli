@@ -12,6 +12,7 @@ from pydantic import TypeAdapter
 
 from tsurv import words
 from tsurv.words import (
+    _WORDS_DIR,
     TIER_WORDS,
     Tier,
     Word,
@@ -39,10 +40,8 @@ _WORD_FILE_ADAPTER: Final = TypeAdapter(_WordFile)
 
 
 def _file_words(name: str) -> set[str]:
-    """Read the raw word set from a local word-list JSON file."""
-    text = (Path(__file__).resolve().parent.parent / "words" / name).read_text(
-        encoding="utf-8",
-    )
+    """Read the raw word set from a packaged word-list JSON file."""
+    text = (_WORDS_DIR / name).read_text(encoding="utf-8")
     return set(_WORD_FILE_ADAPTER.validate_json(text)["words"])
 
 

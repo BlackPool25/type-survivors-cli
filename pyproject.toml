@@ -2,9 +2,25 @@
 name = "type-survivors-cli"
 version = "0.1.0"
 description = "Type Survivors: a typing-survivors terminal game (Textual)."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Shreyas S Joshi" }]
+keywords = ["game", "typing", "terminal", "textual", "survivors"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Games/Entertainment",
+    "Topic :: Utilities",
+]
 requires-python = ">=3.13"
 dependencies = [
     "par-textual-image>=0.1.0",
+    "pillow>=11.0",
     "pydantic>=2.14.1",
     "pygame-ce>=2.5.8",
     "rich-pixels>=3.0.1",
@@ -21,6 +37,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tsurv"]
+# Unused art: Kenney reference pack + blood-decal PNGs (floor splats render as
+# text). Kept in the repo/sdist, shipped out of the wheel to save ~1M.
+exclude = [
+    "src/tsurv/assets/tiny-creatures/**",
+    "src/tsurv/assets/decals/**",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

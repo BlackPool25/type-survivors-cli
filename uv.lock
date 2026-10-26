@@ -578,6 +578,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "par-textual-image" },
+    { name = "pillow" },
     { name = "pydantic" },
     { name = "pygame-ce" },
     { name = "rich-pixels" },
@@ -597,6 +598,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "par-textual-image", specifier = ">=0.1.0" },
+    { name = "pillow", specifier = ">=11.0" },
     { name = "pydantic", specifier = ">=2.14.1" },
     { name = "pygame-ce", specifier = ">=2.5.8" },
     { name = "rich-pixels", specifier = ">=3.0.1" },

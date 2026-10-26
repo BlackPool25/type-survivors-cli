@@ -6,6 +6,7 @@ import secrets
 from collections import Counter
 from dataclasses import dataclass
 from enum import StrEnum
+from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NewType, TypedDict, assert_never
 
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
     import random
     from collections.abc import Mapping, Sequence
 
-_WORDS_DIR: Final = Path(__file__).resolve().parent.parent.parent / "words"
+_WORDS_DIR: Final = Path(str(resources.files("tsurv") / "words"))
 
 WEAK_KEY_BOOST: Final = 3
 """Reweight factor for weak-key words: listed this often, never exclusively."""
