@@ -125,6 +125,7 @@ from tsurv.visuals import (
     boss_portal_mark,
     braziers_layer,
     core_sprite_file,
+    dungeon_floor_layer,
     foe_hit_showing,
     foe_sprite_file,
     fx_line,
@@ -138,6 +139,7 @@ from tsurv.visuals import (
     runic_floor_layer,
     shop_row_text,
     sprite_path,
+    wall_torches_layer,
 )
 from tsurv.words import (
     TIER_WORDS,
@@ -718,6 +720,7 @@ class ArenaScreen(Screen[None]):
         yield Label("", id="bossbanner")
         with Vertical(id="arena"):
             with Vertical(id="stage"):
+                yield ArenaCanvas(widget_id="field")
                 if kitty:
                     yield TerminalImage(id="core-sprite")
                     for index in range(MAX_FOES):
@@ -726,8 +729,6 @@ class ArenaScreen(Screen[None]):
                             classes="foe-sprite",
                         )
                         yield Label("", id=f"foe-word-{index}", classes="foe-chip")
-                else:
-                    yield ArenaCanvas(widget_id="field")
             with Vertical(id="bossbars"):
                 yield from self._boss_bars
         yield Label("", id="fx")
@@ -1498,19 +1499,15 @@ class ArenaScreen(Screen[None]):
         cx, cy = canvas_xy(angle=0.0, distance=0.0, width=width, height=height)
         if self.advance_active:
             cy = max(cy - 1, 0)
-        if self._pick.kind is RendererKind.KITTY:
-            self._refresh_kitty(
-                cx,
-                cy,
-                frame_tick,
-                now,
-                scroll,
-                shake=shake,
-                hit=hit,
-            )
-            return
         self._blood_decals = [d for d in self._blood_decals if d.expires_at > now]
         sprites: list[FieldSprite] = []
+        sprites.extend(
+            dungeon_floor_layer(
+                width=width,
+                height=height,
+                mono=self.mono,
+            ),
+        )
         sprites.extend(
             runic_floor_layer(
                 width=width,
@@ -1522,6 +1519,14 @@ class ArenaScreen(Screen[None]):
         )
         sprites.extend(
             braziers_layer(
+                width=width,
+                height=height,
+                tick=frame_tick,
+                mono=self.mono,
+            ),
+        )
+        sprites.extend(
+            wall_torches_layer(
                 width=width,
                 height=height,
                 tick=frame_tick,
@@ -1541,6 +1546,20 @@ class ArenaScreen(Screen[None]):
             for decal in self._blood_decals
             if 0 <= decal.x < width and 0 <= decal.y < height
         )
+        if self._pick.kind is RendererKind.KITTY:
+            self.query_one("#field", ArenaCanvas).set_field(
+                render_field(width=width, height=height, sprites=tuple(sprites)),
+            )
+            self._refresh_kitty(
+                cx,
+                cy,
+                frame_tick,
+                now,
+                scroll,
+                shake=shake,
+                hit=hit,
+            )
+            return
         core_art = CORE_ART_HIT if low else CORE_ART
         core_x, core_y = art_origin(cx, cy, core_art)
         sprites.append(
