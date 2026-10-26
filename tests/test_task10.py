@@ -85,7 +85,7 @@ def test_explicit_pins_beat_tty_query() -> None:
     )
     assert (
         probe_renderer({"PAR_TERM_GRAPHICS": "sixel"}, query_tty=lambda: True).kind
-        is RendererKind.CELLS
+        is RendererKind.SIXEL
     )
     assert (
         probe_renderer({"TSURV_TRUEPIXEL": "1"}, query_tty=lambda: False).kind

@@ -69,7 +69,14 @@ class RendererKind(StrEnum):
     """Active sprite renderer: true-pixel PNGs or hand-built cells."""
 
     KITTY = "kitty"
+    SIXEL = "sixel"
+    ITERM2 = "iterm2"
     CELLS = "cells"
+
+    @property
+    def true_pixel(self) -> bool:
+        """Whether this kind paints PNGs (any graphics protocol)."""
+        return self is not RendererKind.CELLS
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,12 +99,15 @@ def select_renderer(
     term_program: str = "",
     term: str = "",
     tty_kitty: bool = False,
+    wt_session: str | None = None,
+    lc_terminal: str = "",
 ) -> RendererPick:
     """Pick the sprite renderer: force flag, par hint, allowlist, TTY, cells.
 
     `tty_kitty` is the live query answer (`query_kitty_graphics`): it only
     fills the allowlist-miss slot, so explicit pins always win. Ghostty behind
     tmux/ssh strips its env ads; the 0.1s query is what still finds it.
+    `wt_session`/`lc_terminal` catch Windows Terminal (sixel) and iTerm2.
     """
     if truepixel == "1":
         kind, reason = RendererKind.KITTY, f"{_TRUEPIXEL_ENV}=1"
@@ -105,14 +115,22 @@ def select_renderer(
         kind, reason = RendererKind.CELLS, f"{_TRUEPIXEL_ENV}=0"
     elif par_graphics == "kitty":
         kind, reason = RendererKind.KITTY, f"{_PAR_ENV}=kitty"
-    elif par_graphics in ("sixel", "iterm2", "halfblock"):
-        kind, reason = RendererKind.CELLS, f"{_PAR_ENV}={par_graphics}"
+    elif par_graphics == "sixel":
+        kind, reason = RendererKind.SIXEL, f"{_PAR_ENV}=sixel"
+    elif par_graphics == "iterm2":
+        kind, reason = RendererKind.ITERM2, f"{_PAR_ENV}=iterm2"
+    elif par_graphics == "halfblock":
+        kind, reason = RendererKind.CELLS, f"{_PAR_ENV}=halfblock"
     else:
         kind, reason = RendererKind.CELLS, _UNKNOWN_REASON
         hay = f"{term_program} {term}".lower()
         token = next((name for name in _GRAPHIC_TERMS if name in hay), None)
         if token is not None:
             kind, reason = RendererKind.KITTY, token
+        elif wt_session or "windows_terminal" in hay or "windows terminal" in hay:
+            kind, reason = RendererKind.SIXEL, "wt-session"
+        elif "iterm" in f"{term_program} {lc_terminal}".lower():
+            kind, reason = RendererKind.ITERM2, "iterm2-env"
         elif tty_kitty:
             kind, reason = RendererKind.KITTY, "tty-query"
     return RendererPick(kind, reason)
@@ -166,20 +184,36 @@ def probe_renderer(
     env: Mapping[str, str] | None = None,
     *,
     query_tty: Callable[[], bool] = query_kitty_graphics,
+    detect: Callable[[], str] | None = None,
 ) -> RendererPick:
-    """Startup probe: env pins first, then the TTY query, then cells."""
+    """Startup probe: env pins first, then lib auto-detect, then cells."""
     live = os.environ if env is None else env
     pick = select_renderer(
         truepixel=live.get(_TRUEPIXEL_ENV),
         par_graphics=live.get(_PAR_ENV),
         term_program=live.get(_TERM_PROGRAM_ENV, ""),
         term=live.get(_TERM_ENV, ""),
+        wt_session=live.get("WT_SESSION"),
+        lc_terminal=live.get("LC_TERMINAL", ""),
     )
-    if (
-        pick.kind is RendererKind.CELLS
-        and pick.reason == _UNKNOWN_REASON
-        and query_tty()
-    ):
+    if pick.kind.true_pixel or pick.reason != _UNKNOWN_REASON:
+        return pick
+    if detect is None:
+        try:
+            from par_textual_image import detect_protocol as _detect
+        except ImportError:
+            _detect = None  # type: ignore[assignment]
+        detect = _detect  # type: ignore[assignment]
+    if detect is not None:
+        with contextlib.suppress(Exception):
+            found = detect()
+            if found == "kitty":
+                return RendererPick(RendererKind.KITTY, "auto-kitty")
+            if found == "sixel":
+                return RendererPick(RendererKind.SIXEL, "auto-sixel")
+            if found == "iterm2":
+                return RendererPick(RendererKind.ITERM2, "auto-iterm2")
+    if query_tty():
         return RendererPick(RendererKind.KITTY, "tty-query")
     return pick
 
