@@ -547,6 +547,14 @@ def test_shop_settings_speak_hub_voice() -> None:
             assert marker in css
 
 
+def test_menu_panels_fill_and_center() -> None:
+    """Menu panels stretch full width (capped) inside centered wrappers."""
+    for css in (ShopScreen.CSS, SettingsScreen.CSS):
+        assert "width: 1fr" in css
+        assert "max-width" in css
+        assert "align-horizontal: center" in css
+
+
 def test_pilot_suspend_saves_and_resume_restores_wave(tmp_path: Path) -> None:
     """P then S suspends the wave; a resume launch restores its tallies."""
 

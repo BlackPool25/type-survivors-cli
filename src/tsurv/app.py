@@ -2056,12 +2056,12 @@ class HubScreen(Screen[None]):
         "#hub-banner { width: 1fr; height: 3; color: #FF2A2A; "
         "text-style: bold; text-align: center; content-align: center middle; }\n"
         "#subtitle { width: 1fr; height: 1; color: #2D724F; text-align: center; }\n"
-        "#hub-header { width: 80%; height: 4; border: solid #7B2CBF; "
+        "#hub-header { width: 1fr; height: 4; border: solid #7B2CBF; "
         "background: #12101F; border-title-align: center; }\n"
         "#gold { width: 1fr; height: 1; color: #FFD23F; text-style: bold; "
         "text-align: center; }\n"
         "#hub-greeting { width: 1fr; height: 1; color: #CACACA; text-align: center; }\n"
-        "#hub-panel { width: 80%; height: 9; border: solid #7B2CBF; "
+        "#hub-panel { width: 1fr; height: 9; border: solid #7B2CBF; "
         "background: #12101F; border-title-align: center; "
         "border-subtitle-align: center; }\n"
         "#hub-list { width: 1fr; height: 6; content-align: center middle; }\n"
@@ -2214,9 +2214,11 @@ class ShopScreen(Screen[None]):
 
     CSS: ClassVar[str] = (
         "Screen { background: #0B0B12; color: #CACACA; }\n"
-        "#shop-panel { width: 80%; height: auto; border: solid #7B2CFB; "
-        "background: #12101F; border-title-align: center; "
-        "border-subtitle-align: center; }\n"
+        "#shop-center { height: 1fr; }\n"
+        "#shop-middle { width: 1fr; align-horizontal: center; }\n"
+        f"#shop-panel {{ width: 1fr; height: auto; max-width: {HUB_COLUMN_MAX}; "
+        "border: solid #7B2CFB; background: #12101F; align: center middle; "
+        "border-title-align: center; border-subtitle-align: center; }\n"
         "#shop-title { color: #FF2A2A; text-style: bold; text-align: center; }\n"
         "#shop-gold { color: #FFD23F; text-style: bold; text-align: center; }\n"
         "#shop-message { height: 1; color: #FFD23F; text-align: center; }\n"
@@ -2236,11 +2238,11 @@ class ShopScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Paneled title, wallet, numbered rows, message, and key hint."""
+        """Centered panel: title, wallet, numbered rows, message, key hint."""
         panel = Vertical(id="shop-panel")
         panel.border_title = " ༺~*~ ✦ VOID MARKET ✦ ~*~༻ "
         panel.border_subtitle = " ⊰─~-~-~ ✦ ~-~-~-⊱ "
-        with panel:
+        with Center(id="shop-center"), Middle(id="shop-middle"), panel:
             yield Label("VOID MARKET", id="shop-title")
             yield Label(f"✦ {self._profile.gold} GOLD BANKED ✦", id="shop-gold")
             for index, item in enumerate(SHOP_CATALOG, start=1):
@@ -2305,9 +2307,11 @@ class SettingsScreen(Screen[None]):
 
     CSS: ClassVar[str] = (
         "Screen { background: #0B0B12; color: #CACACA; }\n"
-        "#settings-panel { width: 80%; height: auto; border: solid #7B2CFB; "
-        "background: #12101F; border-title-align: center; "
-        "border-subtitle-align: center; }\n"
+        "#settings-center { height: 1fr; }\n"
+        "#settings-middle { width: 1fr; align-horizontal: center; }\n"
+        f"#settings-panel {{ width: 1fr; height: auto; max-width: {HUB_COLUMN_MAX}; "
+        "border: solid #7B2CFB; background: #12101F; align: center middle; "
+        "border-title-align: center; border-subtitle-align: center; }\n"
         "#settings-title { color: #FF2A2A; text-style: bold; text-align: center; }\n"
         "#settings-gold { color: #FFD23F; text-style: bold; text-align: center; }\n"
         "#settings-rows { height: 4; text-align: center; }\n"
@@ -2322,11 +2326,11 @@ class SettingsScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Paneled title, wallet, current toggle values, and the key hint."""
+        """Centered panel: title, wallet, toggle values, and the key hint."""
         panel = Vertical(id="settings-panel")
         panel.border_title = " ༺~*~ ✥ RITUAL CIRCLE ✥ ~*~༻ "
         panel.border_subtitle = " ⊰─~-~-~ ✦ ~-~-~-⊱ "
-        with panel:
+        with Center(id="settings-center"), Middle(id="settings-middle"), panel:
             yield Label("RITUAL CIRCLE", id="settings-title")
             yield Label(
                 f"✦ {self._profile.gold} GOLD BANKED ✦",
