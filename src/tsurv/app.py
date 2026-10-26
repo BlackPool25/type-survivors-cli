@@ -28,12 +28,12 @@ from tsurv.arena import (
     apply_pickup,
     boss_cleared,
     chain_lightning,
-    clear_lock,
     corrupted_display,
     handle_keystroke,
     initial_arena,
     mercy_spawn_factor,
     mercy_tier,
+    reset_word,
     roll_drop,
     seconds_to_impact,
     set_boss_wave,
@@ -42,6 +42,14 @@ from tsurv.arena import (
     spawn_radius_for_level,
     spawn_wave,
     world_xy,
+)
+from tsurv.audio import (
+    AudioConfig,
+    Sound,
+    default_enabled,
+    find_player,
+    play_event,
+    start_ambient,
 )
 from tsurv.combat import EnemyId, Kill, rolling_wpm, spawn_interval
 from tsurv.grammar import GrammarError, generate_boss_sentence
@@ -69,7 +77,7 @@ from tsurv.metrics import (
     tally_accuracy,
     tally_of,
 )
-from tsurv.profile import Profile, RunSummary, weak_keys_for_spawn
+from tsurv.profile import Profile, RunSummary, Settings, weak_keys_for_spawn
 from tsurv.report import render_report
 from tsurv.screens import (
     HELP_TEXT,
@@ -135,6 +143,7 @@ from tsurv.words import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from textual import events
@@ -212,6 +221,9 @@ def pause_action_for(key: str) -> PauseAction | None:
 
 MAX_FOES: Final = 8
 """On-screen enemy cap, bounding layout and difficulty."""
+
+SPAWN_OUTSIDE_MARGIN: Final = 1.0
+"""Off-screen spawn margin: foes start this many world units past the edge."""
 
 REF_WPM: Final = 40.0
 """Reference WPM for adaptive spawn pacing."""
@@ -427,6 +439,7 @@ class ArenaScreen(Screen[None]):
 
     CSS: ClassVar[str] = (
         "Screen { background: #0B0B12; color: #CACACA; }\n"
+        "#arena, #stage, .foe-sprite, #core-sprite { background: #0B0B12; }\n"
         "#topbar { width: 1fr; height: 3; border: solid #952CF5; color: #CACACA; }\n"
         "#arena { height: 1fr; border: solid #952CF5; }\n"
         "#stage { height: 1fr; }\n"
@@ -521,6 +534,8 @@ class ArenaScreen(Screen[None]):
         self._drift_until: float = 0.0
         self._pause_selected: int = 0
         self._pause_help: bool = False
+        self._audio_player: str | None = None
+        self._stop_ambient: Callable[[], None] | None = None
 
     @property
     def arena_state(self) -> ArenaState:
@@ -718,9 +733,33 @@ class ArenaScreen(Screen[None]):
         if self._pick.kind is RendererKind.KITTY:
             for widget in self.query(TerminalImage):
                 widget.force_protocol("kitty")
+        self._audio_player = find_player() if default_enabled() else None
+        self._stop_ambient = start_ambient(
+            self._audio_player,
+            enabled=self._audio_enabled,
+        )
         self._refresh()
         self.check_viewport()
         _ = self.set_interval(1 / 60, self._tick)
+
+    def on_unmount(self) -> None:
+        """Silence the drone when the arena leaves the stack."""
+        if self._stop_ambient is not None:
+            self._stop_ambient()
+            self._stop_ambient = None
+
+    def _audio_enabled(self) -> bool:
+        """Effective sound switch: profile toggle AND a probed player at mount."""
+        profile_on = (
+            self._app_ref.profile.settings.sound_on
+            if self._app_ref is not None
+            else True
+        )
+        return profile_on and self._audio_player is not None
+
+    def _audio_config(self) -> AudioConfig:
+        """Snapshot the current audio state for one fire-and-forget dispatch."""
+        return AudioConfig(enabled=self._audio_enabled(), player=self._audio_player)
 
     def on_resize(self, _event: events.Resize) -> None:
         """Re-evaluate the guard breakpoint on every terminal resize."""
@@ -770,7 +809,11 @@ class ArenaScreen(Screen[None]):
             self._crash(exc)
 
     def _edge_floor(self, angle: float) -> float:
-        """Per-angle spawn floor: level radius, lifted to the field edge."""
+        """Per-angle spawn floor: level radius, lifted past the field edge.
+
+        The margin pushes fresh foes off-screen so they walk visibly in;
+        typing never gates on visibility, so nothing soft-locks outside.
+        """
         if not self.is_mounted:
             return spawn_radius_for_level(self._arena.wave)
         stage = self.query_one("#stage", Vertical)
@@ -779,7 +822,9 @@ class ArenaScreen(Screen[None]):
         if width <= 0 or height <= 0:
             return spawn_radius_for_level(self._arena.wave)
         edge = edge_spawn_distance(angle=angle, width=width, height=height)
-        return max(spawn_radius_for_level(self._arena.wave), edge)
+        return max(spawn_radius_for_level(self._arena.wave), edge) + (
+            SPAWN_OUTSIDE_MARGIN
+        )
 
     def _seat_initial_ring(self) -> None:
         """Push pre-layout foes out to their live per-angle edge (one-shot).
@@ -893,6 +938,7 @@ class ArenaScreen(Screen[None]):
             now = time.monotonic()
             self._boss_banner_until = now + self._BOSS_BANNER_S
             self._juice = replace(self._juice, trauma=1.0)
+            play_event(self._audio_config(), Sound.BOSS)
             return
         tier = mercy_tier(
             Tier.T1 if self._arena.wave <= 1 else Tier.T2,
@@ -961,8 +1007,13 @@ class ArenaScreen(Screen[None]):
                 self._pause_help = False
                 self._refresh()
                 return
-            self._arena = clear_lock(self._arena)
+            self._arena = reset_word(self._arena)
             self._refresh()
+            return
+        if event.key in ("backspace", "delete"):
+            if not self.paused:
+                self._arena = reset_word(self._arena)
+                self._refresh()
             return
         if event.key == "enter" and self.paused:
             self._activate_selected()
@@ -987,6 +1038,7 @@ class ArenaScreen(Screen[None]):
         self._tally = self._tally.add(tally_of(outcome, locked))
         if isinstance(outcome, Kill):
             self._kill_times.append(now)
+            play_event(self._audio_config(), Sound.KILL)
             self._resolve_drop(before, outcome.target)
             self._juice_hit(before, outcome, now)
         self._refresh()
@@ -1672,13 +1724,13 @@ class HubScreen(Screen[None]):
         "#hub-banner { width: 1fr; height: 3; color: #FF2A2A; "
         "text-style: bold; text-align: center; content-align: center middle; }\n"
         "#subtitle { width: 1fr; height: 1; color: #B57CFF; text-align: center; }\n"
-        "#hub-header { width: 80%; height: 4; border: solid #952CF5; }\n"
+        "#hub-header { width: 80%; height: 4; border: solid #952CF5; background: #12121e; }\n"
         "#gold { width: 1fr; height: 1; color: #FFD23F; text-style: bold; "
         "text-align: center; }\n"
         "#hub-greeting { width: 1fr; height: 1; color: #CACACA; text-align: center; }\n"
-        "#hub-panel { width: 80%; height: 9; border: solid #952CF5; }\n"
-        "#hub-list { width: 1fr; height: 6; }\n"
-        "#hub-message { width: 1fr; height: 1; color: #FFD23F; }\n"
+        "#hub-panel { width: 80%; height: 9; border: solid #952CF5; background: #12121e; }\n"
+        "#hub-list { width: 1fr; height: 6; content-align: center middle; }\n"
+        "#hub-message { width: 1fr; height: 1; color: #FFD23F; text-align: center; }\n"
         "#hub-stats { width: 1fr; height: 1; color: #FFD23F; text-align: center; }\n"
     )
 
@@ -1713,18 +1765,20 @@ class HubScreen(Screen[None]):
             )
             yield Label(hub_banner_text(mono=not colors_enabled()), id="hub-banner")
             yield Label(TAGLINE, id="subtitle")
-            with Vertical(id="hub-header"):
-                yield Label(f"gold {self._app_ref.profile.gold}", id="gold")
-                yield Label(
-                    hub_greeting(
-                        gold=self._app_ref.profile.gold,
-                        runs=len(self._app_ref.profile.runs),
-                    ),
-                    id="hub-greeting",
-                )
-            with Vertical(id="hub-panel"):
-                yield Label("", id="hub-list")
-                yield Label("", id="hub-message")
+            with Center():
+                with Vertical(id="hub-header"):
+                    yield Label(f"gold {self._app_ref.profile.gold}", id="gold")
+                    yield Label(
+                        hub_greeting(
+                            gold=self._app_ref.profile.gold,
+                            runs=len(self._app_ref.profile.runs),
+                        ),
+                        id="hub-greeting",
+                    )
+            with Center():
+                with Vertical(id="hub-panel"):
+                    yield Label("", id="hub-list")
+                    yield Label("", id="hub-message")
             yield Label(hub_footer(self._app_ref.profile), id="hub-stats")
 
     def on_mount(self) -> None:
@@ -1967,7 +2021,12 @@ class TypeSurvivorsApp(App[None]):
         self._spawn_enabled: bool = spawn_enabled
         self._weak_keys: tuple[str, ...] = weak_keys
         self._seed: int | None = seed
-        self._profile: Profile = profile if profile is not None else Profile()
+        if profile is None:
+            self._profile: Profile = Profile(
+                settings=Settings(sound_on=default_enabled()),
+            )
+        else:
+            self._profile = profile
         self._profile_dir: Path | None = profile_dir
         self._start_at_hub: bool = start_at_hub
         self._resume: bool = resume
