@@ -439,7 +439,7 @@ class ArenaScreen(Screen[None]):
 
     CSS: ClassVar[str] = (
         "Screen { background: #0B0B12; color: #CACACA; }\n"
-        "#arena, #stage, .foe-sprite, #core-sprite { background: #0B0B12; }\n"
+        "#arena, #stage, #field, .foe-sprite, #core-sprite { background: #0B0B12; }\n"
         "#topbar { width: 1fr; height: 3; border: solid #952CF5; color: #CACACA; }\n"
         "#arena { height: 1fr; border: solid #952CF5; }\n"
         "#stage { height: 1fr; }\n"
