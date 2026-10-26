@@ -18,6 +18,8 @@ from rich.console import Console
 from rich_pixels import HalfcellRenderer, Pixels
 from terminaltexteffects.effects.effect_decrypt import Decrypt
 
+from tsurv.rating import rank_for
+
 if TYPE_CHECKING:
     from tsurv.profile import Profile
 
@@ -125,11 +127,12 @@ def decrypt_frames(text: str, *, limit: int = 24) -> tuple[str, ...]:
 
 
 def hub_footer(profile: Profile) -> str:
-    """Alpha-dashboard stats line: best WPM, banked gold, top wave level."""
+    """Alpha-dashboard stats line: rank, best WPM, banked gold, top wave."""
     best = 0
     level = 1
     for run in profile.runs:
         if run.wpm_samples:
             best = max(best, int(sum(run.wpm_samples) / len(run.wpm_samples)))
         level = max(level, run.wave)
-    return f"best {best} WPM / {profile.gold}g gold / LV {level}"
+    rank = rank_for(profile.skill_wpm)
+    return f"{rank} / best {best} WPM / {profile.gold}g gold / LV {level}"

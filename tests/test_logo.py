@@ -221,3 +221,9 @@ def test_hub_fits_80x24_no_clipping() -> None:
             assert logo_height <= _SHORT_LOGO_ROWS
 
     asyncio.run(_scenario())
+
+
+def test_hub_footer_names_visible_rank() -> None:
+    """Footer carries the visible skill rank beside best and gold."""
+    assert "Flame" in hub_footer(Profile())
+    assert "Mythic" in hub_footer(Profile(skill_wpm=95.0))

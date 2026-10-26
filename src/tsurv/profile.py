@@ -168,6 +168,12 @@ class Profile(BaseModel):
     per_key: dict[str, KeyStat] = Field(default_factory=dict)
     runs: tuple[RunSummary, ...] = ()
     base_wpm: float | None = Field(default=None, ge=0.0)
+    skill_wpm: float = Field(default=40.0, ge=1.0)
+    """Persistent Glicko-style estimate; seeds the deal target on run start."""
+    skill_rd: float = Field(default=60.0, ge=8.0)
+    """Estimate uncertainty; shrinks with banked runs, floors at 8."""
+    skill_kills: int = Field(default=0, ge=0)
+    """Banked-kill observation count behind the estimate."""
 
     @field_validator("shop", mode="before")
     @classmethod

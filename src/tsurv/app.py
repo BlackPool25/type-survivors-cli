@@ -108,6 +108,7 @@ from tsurv.profile import (
     save_profile,
     weak_keys_for_spawn,
 )
+from tsurv.rating import SkillRating, bank_run_skill
 from tsurv.report import render_report
 from tsurv.screens import (
     CACHE_TO_KIND,
@@ -292,6 +293,8 @@ _WPM_PER_PRESS_SECOND: Final = 12.0
 _START_HP: Final = 100.0
 _MIN_STUN_S: Final = 0.1
 _RUN_HISTORY_CAP: Final = 50
+GENTLE_START_WPM: Final = 30.0
+"""Run-start deal cap: veterans warm up gentle, pace takes over fast."""
 
 _BOSS_GENERATION_ATTEMPTS: Final = 2
 """Grammar tries per boss spawn before falling back to the T3 word list."""
@@ -529,6 +532,7 @@ class ArenaScreen(Screen[None]):
         max_hp_bonus: float = 0.0,
         stun_duration: float = STUN_DURATION,
         veil_bonus: float = 0.0,
+        ability: float = REF_WPM,
     ) -> None:
         """Seed the arena; tests inject words and disable the spawner."""
         super().__init__()
@@ -578,6 +582,7 @@ class ArenaScreen(Screen[None]):
         self._stun_duration: float = stun_duration
         self._veil_bonus: float = veil_bonus
         self._banked: bool = False
+        self._ability: float = ability
         self._run_clock: float = 0.0
         self.mono: bool = not colors_enabled()
         self._clock: float = 0.0
@@ -619,6 +624,11 @@ class ArenaScreen(Screen[None]):
     def kill_samples(self) -> tuple[KillSample, ...]:
         """Trailing per-kill pace samples feeding the spawn speedometer."""
         return tuple(self._kill_samples)
+
+    @property
+    def ability(self) -> float:
+        """Run-start deal target; measured pace overrides it after two kills."""
+        return self._ability
 
     @property
     def is_practice(self) -> bool:
@@ -1091,7 +1101,7 @@ class ArenaScreen(Screen[None]):
             if self._app_ref is not None
             else ()
         )
-        ability = service_wpm(self._kill_samples) or REF_WPM
+        ability = service_wpm(self._kill_samples) or self._ability
         opening = OPENING_MAX_LEN if self._arena.wave <= 1 else None
         word = deal_word(
             tier,
@@ -2432,7 +2442,26 @@ class TypeSurvivorsApp(App[None]):
             ),
         )[-_RUN_HISTORY_CAP:]
         arena.mark_banked()
-        self.apply_profile(profile.model_copy(update={"runs": history}))
+        pace = service_wpm(arena.kill_samples)
+        skill = bank_run_skill(
+            SkillRating(
+                rating=self._profile.skill_wpm,
+                rd=self._profile.skill_rd,
+                kills=self._profile.skill_kills,
+            ),
+            pace,
+            len(arena.kill_samples),
+        )
+        self.apply_profile(
+            profile.model_copy(
+                update={
+                    "runs": history,
+                    "skill_wpm": skill.rating,
+                    "skill_rd": skill.rd,
+                    "skill_kills": skill.kills,
+                },
+            ),
+        )
         if self._profile_dir is not None:
             with contextlib.suppress(CheckpointError):
                 clear_checkpoint(self._profile_dir)
@@ -2563,6 +2592,7 @@ class TypeSurvivorsApp(App[None]):
             practice=practice,
             checkpoint_dir=self._profile_dir,
             max_hp_bonus=vitality * VITALITY_HP_PER_RANK,
+            ability=min(self._profile.skill_wpm, GENTLE_START_WPM),
             stun_duration=max(
                 _MIN_STUN_S,
                 STUN_DURATION - focus * FOCUS_STUN_RELIEF_PER_RANK,

@@ -8,6 +8,7 @@ from tsurv.rating import (
     MIN_RATING,
     RD_FLOOR,
     RD_START,
+    bank_run_skill,
     initial_rating,
     rank_for,
     update_rating,
@@ -18,6 +19,8 @@ _FAST: Final = 80.0
 _STEADY: Final = 60.0
 _CLOSE_ENOUGH: Final = 5.0
 _LONG_RUN: Final = 50
+_BANKED_KILLS: Final = 5
+"""Kill count folded by one banked run in the skill persistence test."""
 
 
 def test_initial_rating_starts_uncertain() -> None:
@@ -59,3 +62,18 @@ def test_rank_tiers_ascend() -> None:
     """Visible ranks rise tier by tier with the estimate."""
     ranks = [rank_for(float(wpm)) for wpm in (10, 25, 40, 55, 70, 95)]
     assert ranks == ["Spark", "Ember", "Flame", "Blaze", "Inferno", "Mythic"]
+
+
+def test_bank_run_skill_folds_pace_into_estimate() -> None:
+    """One banked run moves the estimate toward the run pace."""
+    skill = bank_run_skill(initial_rating(), _FAST, _BANKED_KILLS)
+    assert skill.rating > _PRIOR
+    assert skill.rd < RD_START
+    assert skill.kills == _BANKED_KILLS
+
+
+def test_bank_run_skill_ignores_empty_runs() -> None:
+    """A run with no kills still counts experience, never pace."""
+    skill = bank_run_skill(initial_rating(), 0.0, 0)
+    assert skill.rating == _PRIOR
+    assert skill.kills == 0

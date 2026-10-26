@@ -8,7 +8,7 @@ visible hub rank; it never touches player power.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Final
 
 RD_START: Final = 60.0
@@ -56,6 +56,17 @@ def update_rating(current: SkillRating, observed_wpm: float) -> SkillRating:
     rating = max(current.rating + gain * (obs - current.rating), MIN_RATING)
     rd = max((1.0 - gain) * prior_var**0.5, RD_FLOOR)
     return SkillRating(rating=rating, rd=rd, kills=current.kills + 1)
+
+
+def bank_run_skill(
+    skill: SkillRating,
+    pace_wpm: float,
+    new_kills: int,
+) -> SkillRating:
+    """Fold one banked run into the estimate; empty runs add no pace."""
+    if pace_wpm <= 0.0 or new_kills <= 0:
+        return replace(skill, kills=skill.kills + new_kills)
+    return replace(update_rating(skill, pace_wpm), kills=skill.kills + new_kills)
 
 
 def rank_for(rating: float) -> str:

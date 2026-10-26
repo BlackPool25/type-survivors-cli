@@ -12,6 +12,7 @@ from textual.widgets import Label
 
 from tsurv.app import (
     BOSS_EVERY,
+    GENTLE_START_WPM,
     ArenaScreen,
     HubScreen,
     ReportScreen,
@@ -97,6 +98,10 @@ _BARS_RANK_TWO: Final = 4
 """Boss bars at wave 10 (2 + rank 2)."""
 _GENERATION_ATTEMPTS: Final = 2
 """Pinned retry count (kept local: the source name is module-private)."""
+_PAIR_KILLS: Final = 2
+"""Two typed kills: the minimum pace sample for the skill bank test."""
+_ROOKIE_WPM: Final = 12.0
+"""Slow skill estimate proving the gentle start never raises the floor."""
 
 
 def _word(text: str) -> Word:
@@ -742,3 +747,47 @@ def test_pilot_kill_records_service_sample(tmp_path: Path) -> None:
             assert sample.seconds > 0.0
 
     asyncio.run(_scenario())
+
+
+def test_pilot_bank_persists_skill_estimate(tmp_path: Path) -> None:
+    """A typed kill folds run pace into the saved skill estimate."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(
+            initial_words=(),
+            spawn_enabled=False,
+            profile_dir=tmp_path,
+        )
+        async with app.run_test() as pilot:
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            screen.spawn_test_enemy("zz", distance=5.0)
+            await pilot.press("z")
+            await pilot.press("z")
+            await pilot.pause()
+            screen.spawn_test_enemy("xx", distance=5.0)
+            await pilot.press("x")
+            await pilot.press("x")
+            await pilot.pause()
+            assert screen.arena_state.kills == _PAIR_KILLS
+            app.bank_run(screen)
+            assert app.profile.skill_kills == _PAIR_KILLS
+            assert load_profile(tmp_path).skill_kills == _PAIR_KILLS
+
+    asyncio.run(_scenario())
+
+
+def test_build_arena_opens_gentle_for_veterans() -> None:
+    """Run start caps the deal target; measured pace takes over after."""
+    app = TypeSurvivorsApp(
+        initial_words=(),
+        spawn_enabled=False,
+        profile=Profile(skill_wpm=95.0),
+    )
+    assert app._build_arena().ability == GENTLE_START_WPM  # noqa: SLF001
+    rookie = TypeSurvivorsApp(
+        initial_words=(),
+        spawn_enabled=False,
+        profile=Profile(skill_wpm=_ROOKIE_WPM),
+    )
+    assert rookie._build_arena().ability == _ROOKIE_WPM  # noqa: SLF001
