@@ -15,12 +15,13 @@ from tsurv.combat import (
     EnemyState,
     Keystroke,
     Kill,
+    KillSample,
     NoTarget,
     TypoStun,
     apply_keystroke,
     keystroke_target,
     lock_target,
-    rolling_wpm,
+    service_wpm,
     spawn_interval,
 )
 from tsurv.words import Tier, Word, WordText
@@ -204,25 +205,26 @@ def test_sixteenth_kill_shields_again() -> None:
     assert (kill.streak, kill.shield_until) == (16, 50.0 + SHIELD_DURATION)
 
 
-def test_rolling_wpm_over_word_completions() -> None:
-    """WPM is completions per minute from the oldest kept timestamp."""
-    now = 1000.0
-    events = [now - 57.0 + 3.0 * i for i in range(20)]
-    assert rolling_wpm(events, now) == 20.0 / 57.0 * 60.0
+def test_service_wpm_measures_chars_per_minute() -> None:
+    """Two 10-char kills in 30s each read as 4 WPM (chars-based)."""
+    samples = (KillSample(chars=10, seconds=30.0), KillSample(chars=10, seconds=30.0))
+    assert service_wpm(samples) == 20.0 / 5.0 / 1.0
 
 
-def test_rolling_wpm_keeps_last_twenty() -> None:
-    """Only the trailing 20 timestamps count."""
-    now = 1000.0
-    events = [now - 24.0 + float(i) for i in range(25)]
-    assert rolling_wpm(events, now) == 20.0 / 19.0 * 60.0
+def test_service_wpm_keeps_last_twenty() -> None:
+    """Only the trailing 20 kill samples count toward the pace."""
+    samples = (KillSample(chars=50, seconds=6.0),) + (
+        KillSample(chars=5, seconds=6.0),
+    ) * 20
+    assert service_wpm(samples) == 100.0 / 5.0 / 2.0
 
 
-def test_rolling_wpm_needs_history() -> None:
-    """Empty, single, or future-only histories report zero."""
-    assert rolling_wpm([], 100.0) == 0.0
-    assert rolling_wpm([99.0], 100.0) == 0.0
-    assert rolling_wpm([101.0, 102.0], 100.0) == 0.0
+def test_service_wpm_needs_history() -> None:
+    """Empty, single, or non-positive samples report zero, never crash."""
+    assert service_wpm(()) == 0.0
+    assert service_wpm((KillSample(chars=5, seconds=6.0),)) == 0.0
+    dead = (KillSample(chars=5, seconds=0.0), KillSample(chars=5, seconds=-1.0))
+    assert service_wpm(dead) == 0.0
 
 
 def test_spawn_interval_parity_is_base() -> None:

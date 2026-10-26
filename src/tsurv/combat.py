@@ -26,7 +26,7 @@ SHIELD_STREAK_EVERY: Final = 8
 """Every Nth streak kill grants a shield."""
 
 WPM_WINDOW: Final = 20
-"""Rolling WPM counts completions over this many trailing words."""
+"""Service WPM averages pace over this many trailing kill samples."""
 
 WPM_MIN_SAMPLES: Final = 2
 """Rolling WPM needs at least this many timestamps, else it reports zero."""
@@ -213,18 +213,28 @@ def keystroke_target(result: Keystroke) -> EnemyId | None:
             assert_never(result)
 
 
-def rolling_wpm(events: Sequence[float], now: float) -> float:
-    """Completions per minute over the trailing words (at most 20).
+@dataclass(frozen=True, slots=True)
+class KillSample:
+    """One finished word: typed chars and active seconds (typo stalls in)."""
 
-    `events` must be chronological: the tail slice keeps the latest entries.
+    chars: int
+    seconds: float
+
+
+def service_wpm(samples: Sequence[KillSample]) -> float:
+    """Chars-based WPM over the trailing kill samples (at most 20).
+
+    Each sample measures active typing time, which the spawn gap cannot
+    throttle — unlike completion counts. Needs two positive samples.
     """
-    recent = [moment for moment in events if moment <= now][-WPM_WINDOW:]
+    recent = [sample for sample in samples if sample.seconds > 0.0][-WPM_WINDOW:]
     if len(recent) < WPM_MIN_SAMPLES:
         return 0.0
-    elapsed = now - recent[0]
-    if elapsed <= 0.0:
-        return 0.0
-    return float(len(recent)) / elapsed * 60.0
+    return (
+        float(sum(sample.chars for sample in recent))
+        / 5.0
+        / (sum(sample.seconds for sample in recent) / 60.0)
+    )
 
 
 def spawn_interval(ref_wpm: float, player_wpm: float) -> float:

@@ -717,3 +717,28 @@ def test_pilot_shop_ranks_and_refund(tmp_path: Path) -> None:
             assert isinstance(app.screen, HubScreen)
 
     asyncio.run(_scenario())
+
+
+def test_pilot_kill_records_service_sample(tmp_path: Path) -> None:
+    """Killing a word stores one (chars, seconds) sample for the speedometer."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(
+            initial_words=(),
+            spawn_enabled=False,
+            profile_dir=tmp_path,
+        )
+        async with app.run_test() as pilot:
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            screen.spawn_test_enemy("zz", distance=5.0)
+            await pilot.press("z")
+            await pilot.press("z")
+            await pilot.pause()
+            assert screen.arena_state.kills == 1
+            assert len(screen.kill_samples) == 1
+            sample = screen.kill_samples[0]
+            assert sample.chars == len("zz")
+            assert sample.seconds > 0.0
+
+    asyncio.run(_scenario())

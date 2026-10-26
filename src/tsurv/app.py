@@ -60,9 +60,10 @@ from tsurv.combat import (
     Advanced,
     EnemyId,
     Kill,
+    KillSample,
     NoTarget,
     TypoStun,
-    rolling_wpm,
+    service_wpm,
     spawn_interval,
 )
 from tsurv.grammar import GrammarError, generate_boss_sentence
@@ -573,6 +574,8 @@ class ArenaScreen(Screen[None]):
         self._clock: float = 0.0
         self._wave_clock: float = 0.0
         self._kill_times: list[float] = []
+        self._kill_samples: list[KillSample] = []
+        self._word_start: float | None = None
         self._press_times: list[float] = []
         self._best_streak: int = 0
         self._nova_good_seconds: float = 0.0
@@ -600,6 +603,11 @@ class ArenaScreen(Screen[None]):
     def arena_state(self) -> ArenaState:
         """Current pure arena state (tests read score/foes through this)."""
         return self._arena
+
+    @property
+    def kill_samples(self) -> tuple[KillSample, ...]:
+        """Trailing per-kill pace samples feeding the spawn speedometer."""
+        return tuple(self._kill_samples)
 
     @property
     def is_practice(self) -> bool:
@@ -965,7 +973,10 @@ class ArenaScreen(Screen[None]):
         self._advance_wave(dt)
         if self._spawn_enabled:
             self._clock += dt
-            gap = spawn_interval(REF_WPM, rolling_wpm(self._kill_times, now))
+            ref = REF_WPM
+            if self._app_ref is not None and self._app_ref.profile.base_wpm is not None:
+                ref = self._app_ref.profile.base_wpm
+            gap = spawn_interval(ref, service_wpm(self._kill_samples))
             gap *= mercy_spawn_factor(self._arena.mercy)
             if self._clock >= gap and len(self._arena.enemies) < MAX_FOES:
                 self._clock = 0.0
@@ -1163,6 +1174,22 @@ class ArenaScreen(Screen[None]):
                 ),
             )
 
+    def _record_kill_sample(
+        self,
+        before: ArenaState,
+        target: EnemyId,
+        now: float,
+    ) -> None:
+        """Store one pace sample; the word clock resets every kill."""
+        foe = next((f for f in before.enemies if f.id == target), None)
+        if foe is not None and self._word_start is not None:
+            seconds = now - self._word_start
+            if seconds > 0.0:
+                self._kill_samples.append(
+                    KillSample(chars=len(foe.word.text), seconds=seconds),
+                )
+        self._word_start = None
+
     async def on_key(self, event: events.Key) -> None:
         """Type-to-target: printable chars feed the arena, P pauses."""
         if self._handle_nav_key(event):
@@ -1186,6 +1213,8 @@ class ArenaScreen(Screen[None]):
         )
         self._arena = state
         self._tally = self._tally.add(tally_of(outcome, locked))
+        if self._word_start is None and not isinstance(outcome, NoTarget):
+            self._word_start = now
         if self._app_ref is not None and not isinstance(outcome, NoTarget):
             previous = self._press_times[-2] if len(self._press_times) > 1 else now
             self._app_ref.note_keystroke(
@@ -1195,6 +1224,7 @@ class ArenaScreen(Screen[None]):
             )
         if isinstance(outcome, Kill):
             self._kill_times.append(now)
+            self._record_kill_sample(before, outcome.target, now)
             play_event(self._audio_config(), Sound.KILL)
             play_event(self._audio_config(), Sound.WORD_POP)
             self._resolve_drop(before, outcome.target)
