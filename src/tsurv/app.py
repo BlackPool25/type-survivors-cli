@@ -51,7 +51,6 @@ from tsurv.audio import (
     find_player,
     play_event,
     play_music_track,
-    start_ambient,
     stop_music_track,
 )
 from tsurv.combat import Advanced, EnemyId, Kill, TypoStun, rolling_wpm, spawn_interval
@@ -122,9 +121,7 @@ from tsurv.visuals import (
     agitated_mark,
     ambient_line,
     boss_portal_mark,
-    braziers_layer,
     core_sprite_file,
-    dungeon_floor_layer,
     foe_hit_showing,
     foe_sprite_file,
     fx_line,
@@ -135,10 +132,8 @@ from tsurv.visuals import (
     marker,
     particle_layer,
     portal_mark,
-    runic_floor_layer,
     shop_row_text,
     sprite_path,
-    wall_torches_layer,
 )
 from tsurv.words import (
     TIER_WORDS,
@@ -752,10 +747,7 @@ class ArenaScreen(Screen[None]):
             for widget in self.query(TerminalImage):
                 widget.force_protocol(self._pick.kind.value)  # pyright: ignore[reportArgumentType]  # type: ignore[arg-type]
         self._audio_player = find_player() if default_enabled() else None
-        self._stop_ambient = start_ambient(
-            self._audio_player,
-            enabled=self._audio_enabled,
-        )
+        self._stop_ambient = None
         if self._audio_enabled():
             play_music_track(
                 MusicTrack.BOSS if self._arena.boss_wave else MusicTrack.TIER_1,
@@ -1497,48 +1489,27 @@ class ArenaScreen(Screen[None]):
             key: born for key, born in self._spawned_at.items() if key in live
         }
         stage = self.query_one("#stage", Vertical)
-        width = stage.content_size.width
-        height = stage.content_size.height
+        width = stage.size.width or stage.content_size.width
+        height = stage.size.height or stage.content_size.height
         if width <= 0 or height <= 0:
             return
         low = low_hp(self._arena.hp, self._arena.max_hp)
         cx, cy = canvas_xy(angle=0.0, distance=0.0, width=width, height=height)
         if self.advance_active:
             cy = max(cy - 1, 0)
+        if self._pick.kind.true_pixel:
+            self._refresh_kitty(
+                cx,
+                cy,
+                frame_tick,
+                now,
+                scroll,
+                shake=shake,
+                hit=hit,
+            )
+            return
         self._blood_decals = [d for d in self._blood_decals if d.expires_at > now]
         sprites: list[FieldSprite] = []
-        sprites.extend(
-            dungeon_floor_layer(
-                width=width,
-                height=height,
-                mono=self.mono,
-            ),
-        )
-        sprites.extend(
-            runic_floor_layer(
-                width=width,
-                height=height,
-                cx=cx,
-                cy=cy,
-                mono=self.mono,
-            ),
-        )
-        sprites.extend(
-            braziers_layer(
-                width=width,
-                height=height,
-                tick=frame_tick,
-                mono=self.mono,
-            ),
-        )
-        sprites.extend(
-            wall_torches_layer(
-                width=width,
-                height=height,
-                tick=frame_tick,
-                mono=self.mono,
-            ),
-        )
         sprites.extend(
             FieldSprite(
                 x=0,
@@ -1552,20 +1523,6 @@ class ArenaScreen(Screen[None]):
             for decal in self._blood_decals
             if 0 <= decal.x < width and 0 <= decal.y < height
         )
-        if self._pick.kind.true_pixel:
-            self.query_one("#field", ArenaCanvas).set_field(
-                render_field(width=width, height=height, sprites=tuple(sprites)),
-            )
-            self._refresh_kitty(
-                cx,
-                cy,
-                frame_tick,
-                now,
-                scroll,
-                shake=shake,
-                hit=hit,
-            )
-            return
         core_art = CORE_ART_HIT if low else CORE_ART
         core_x, core_y = art_origin(cx, cy, core_art)
         sprites.append(

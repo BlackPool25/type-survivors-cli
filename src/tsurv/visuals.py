@@ -174,56 +174,9 @@ def dungeon_floor_layer(
     height: int,
     mono: bool,
 ) -> tuple[FieldSprite, ...]:
-    """Atmospheric flagstone pavers, mortar seams, and boundary stone trim."""
-    if width < _MIN_RUNIC_W or height < _MIN_RUNIC_H:
-        return ()
-    sprites: list[FieldSprite] = []
-    paver_style = "" if mono else "#181826"
-    seam_style = "" if mono else "#13131E"
-    wall_style = "" if mono else "#2D263D"
-
-    for x in range(2, width - 2, _WALL_SEAM_STEP):
-        sprites.append(
-            FieldSprite(
-                x=0,
-                y=0,
-                art=(),
-                color=None,
-                chip=Text("═", style=wall_style),
-                chip_x=x,
-                chip_y=1,
-            ),
-        )
-        sprites.append(
-            FieldSprite(
-                x=0,
-                y=0,
-                art=(),
-                color=None,
-                chip=Text("═", style=wall_style),
-                chip_x=x,
-                chip_y=max(height - 2, 2),
-            ),
-        )
-
-    for y in range(2, height - 2, _FLOOR_STEP_Y):
-        for x in range(4, width - 4, _FLOOR_STEP_X):
-            offset_x = x + (2 if (y // 2) % 2 else 0)
-            if 0 <= offset_x < width:
-                glyph = "·" if (x + y) % 12 == 0 else ","
-                style = paver_style if glyph == "·" else seam_style
-                sprites.append(
-                    FieldSprite(
-                        x=0,
-                        y=0,
-                        art=(),
-                        color=None,
-                        chip=Text(glyph, style=style),
-                        chip_x=offset_x,
-                        chip_y=y,
-                    ),
-                )
-    return tuple(sprites)
+    """Flagstone floor layer (clean no-op to preserve pitch-black void)."""
+    del width, height, mono
+    return ()
 
 
 def runic_floor_layer(
@@ -234,56 +187,9 @@ def runic_floor_layer(
     cy: int,
     mono: bool,
 ) -> tuple[FieldSprite, ...]:
-    """Ornate runic circle around the core, low-contrast so words stay readable."""
-    if width < _MIN_RUNIC_W or height < _MIN_RUNIC_H:
-        return ()
-    sprites: list[FieldSprite] = []
-    r_x = max(min(width // 4, 14), 5)
-    r_y = max(min(height // 4, 6), 2)
-    outer_style = "" if mono else "#59257C"
-    cardinal_style = "" if mono else "#9D4EDD"
-    inner_style = "" if mono else "#3A1B54"
-
-    runes = ("✦", "✧", "ᛟ", "ᚱ", "※", "⊕", "¤", "·")
-    for deg_idx, deg in enumerate(range(0, 360, 15)):
-        rad = deg * 0.0174532925
-        px = cx + round(cos(rad) * r_x)
-        py = cy + round(cos(rad) * r_y)
-        if 0 <= px < width and 0 <= py < height:
-            is_cardinal = deg % 90 == 0
-            glyph = runes[deg_idx % len(runes)] if deg % 30 == 0 else "·"
-            style = cardinal_style if is_cardinal else outer_style
-            sprites.append(
-                FieldSprite(
-                    x=0,
-                    y=0,
-                    art=(),
-                    color=None,
-                    chip=Text(glyph, style=style),
-                    chip_x=px,
-                    chip_y=py,
-                ),
-            )
-
-    inner_rx = max(r_x // 2, 3)
-    inner_ry = max(r_y // 2, 2)
-    for deg in range(0, 360, 30):
-        rad = deg * 0.0174532925
-        px = cx + round(cos(rad) * inner_rx)
-        py = cy + round(cos(rad) * inner_ry)
-        if 0 <= px < width and 0 <= py < height:
-            sprites.append(
-                FieldSprite(
-                    x=0,
-                    y=0,
-                    art=(),
-                    color=None,
-                    chip=Text("•" if deg % 60 == 0 else "·", style=inner_style),
-                    chip_x=px,
-                    chip_y=py,
-                ),
-            )
-    return tuple(sprites)
+    """Clean no-op runic layer."""
+    del width, height, cx, cy, mono
+    return ()
 
 
 def braziers_layer(
@@ -293,69 +199,9 @@ def braziers_layer(
     tick: int,
     mono: bool,
 ) -> tuple[FieldSprite, ...]:
-    """Four grand flickering corner braziers anchoring the arena boundaries."""
-    if width < _MIN_BRAZIER_W or height < _MIN_BRAZIER_H:
-        return ()
-    sprites: list[FieldSprite] = []
-    anim_phase = tick % 4
-    flame_glyph = "▲" if anim_phase < _FLAME_ANIM_HALF_PERIOD else "*"
-    flame_style = "" if mono else "#FF7A00 bold"
-    ember_style = "" if mono else "#FFD23F bold"
-    pedestal_style = "" if mono else "#666682"
-    base_style = "" if mono else "#444458"
-    corners = (
-        (4, 2),
-        (max(width - 5, 0), 2),
-        (4, max(height - 4, 0)),
-        (max(width - 5, 0), max(height - 4, 0)),
-    )
-    for bx, by in corners:
-        if anim_phase % 2 == 1:
-            sprites.append(
-                FieldSprite(
-                    x=0,
-                    y=0,
-                    art=(),
-                    color=None,
-                    chip=Text("°", style=ember_style),
-                    chip_x=bx,
-                    chip_y=max(by - 1, 0),
-                ),
-            )
-        sprites.append(
-            FieldSprite(
-                x=0,
-                y=0,
-                art=(),
-                color=None,
-                chip=Text(flame_glyph, style=flame_style),
-                chip_x=bx,
-                chip_y=by,
-            ),
-        )
-        sprites.append(
-            FieldSprite(
-                x=0,
-                y=0,
-                art=(),
-                color=None,
-                chip=Text("╦", style=pedestal_style),
-                chip_x=bx,
-                chip_y=by + 1,
-            ),
-        )
-        sprites.append(
-            FieldSprite(
-                x=0,
-                y=0,
-                art=(),
-                color=None,
-                chip=Text("╩", style=base_style),
-                chip_x=bx,
-                chip_y=by + 2,
-            ),
-        )
-    return tuple(sprites)
+    """Clean no-op braziers layer."""
+    del width, height, tick, mono
+    return ()
 
 
 def wall_torches_layer(
@@ -365,38 +211,9 @@ def wall_torches_layer(
     tick: int,
     mono: bool,
 ) -> tuple[FieldSprite, ...]:
-    """Mid-wall gothic sconces illuminating the east and west edges."""
-    if width < _MIN_TORCH_W or height < _MIN_TORCH_H:
-        return ()
-    sprites: list[FieldSprite] = []
-    cy = height // 2
-    flame_glyph = "♦" if (tick // 2) % 2 else "▲"
-    flame_style = "" if mono else "#FF9900 bold"
-    bracket_style = "" if mono else "#555566"
-    for sx in (2, max(width - 3, 0)):
-        sprites.append(
-            FieldSprite(
-                x=0,
-                y=0,
-                art=(),
-                color=None,
-                chip=Text(flame_glyph, style=flame_style),
-                chip_x=sx,
-                chip_y=cy - 1,
-            ),
-        )
-        sprites.append(
-            FieldSprite(
-                x=0,
-                y=0,
-                art=(),
-                color=None,
-                chip=Text("╠" if sx < width // 2 else "╣", style=bracket_style),
-                chip_x=sx,
-                chip_y=cy,
-            ),
-        )
-    return tuple(sprites)
+    """Clean no-op wall torches layer."""
+    del width, height, tick, mono
+    return ()
 
 
 def foe_sprite_file(kind: EnemyKind, *, hit: bool, tick: int) -> str:
