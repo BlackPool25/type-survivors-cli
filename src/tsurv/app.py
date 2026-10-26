@@ -1885,14 +1885,15 @@ class ReportScreen(Screen[None]):
         "#report-center { height: 1fr; }\n"
         "#report-middle { width: 1fr; align-horizontal: center; }\n"
         f"#report-column {{ width: 1fr; height: auto; max-width: {HUB_COLUMN_MAX}; "
-        "align: center middle; }\n"
+        "align: center middle; border: solid #7B2CFB; background: #12101F; "
+        "border-title-align: center; border-subtitle-align: center; }\n"
         "#report-score { width: 1fr; height: 1; text-align: center; }\n"
         "#report-kills { width: 1fr; height: 1; text-align: center; }\n"
         "#report-wave { width: 1fr; height: 1; text-align: center; }\n"
         "#report-card { width: 1fr; height: 6; text-align: center; }\n"
         "#report-spark { width: 1fr; height: 3; }\n"
         "#report-stats { width: 1fr; height: 6; text-align: center; }\n"
-        "#report-hint { width: 1fr; height: 1; color: #952CF5; "
+        "#report-hint { width: 1fr; height: 1; color: #24AEEB; "
         "text-align: center; }\n"
     )
 
@@ -1950,14 +1951,11 @@ class ReportScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Centered tallies, card, WPM chart, stats, retry, and the key hint."""
-        with (
-            Center(id="report-center"),
-            Middle(id="report-middle"),
-            Vertical(
-                id="report-column",
-            ),
-        ):
+        """Framed tallies, card, WPM chart, stats, retry, and the key hint."""
+        column = Vertical(id="report-column")
+        column.border_title = " ༺~*~ ✦ THE FALLEN ✦ ~*~༻ "
+        column.border_subtitle = " ⊰─~-~-~ ✦ ~-~-~-⊱ "
+        with Center(id="report-center"), Middle(id="report-middle"), column:
             yield Label(self.score_line, id="report-score")
             yield Label(self.kills_line, id="report-kills")
             yield Label(self.wave_line, id="report-wave")
@@ -2215,11 +2213,14 @@ class ShopScreen(Screen[None]):
     """Meta shop: number keys buy permanent perks, then return to arena."""
 
     CSS: ClassVar[str] = (
-        "Screen { background: #0B0B12; color: #CACACA; border: solid #952CF5; }\n"
-        "#shop-title { color: #FF2A2A; text-style: bold; }\n"
-        "#shop-gold { color: #FFD23F; text-style: bold; }\n"
-        "#shop-message { height: 1; color: #FFD23F; }\n"
-        "#shop-hint { color: #24AEEB; }\n"
+        "Screen { background: #0B0B12; color: #CACACA; }\n"
+        "#shop-panel { width: 80%; height: auto; border: solid #7B2CFB; "
+        "background: #12101F; border-title-align: center; "
+        "border-subtitle-align: center; }\n"
+        "#shop-title { color: #FF2A2A; text-style: bold; text-align: center; }\n"
+        "#shop-gold { color: #FFD23F; text-style: bold; text-align: center; }\n"
+        "#shop-message { height: 1; color: #FFD23F; text-align: center; }\n"
+        "#shop-hint { color: #24AEEB; text-align: center; }\n"
     )
 
     def __init__(self, profile: Profile, app: TypeSurvivorsApp) -> None:
@@ -2235,16 +2236,20 @@ class ShopScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Title, wallet, one numbered row per catalog line, key hint."""
-        yield Label("VOID MARKET", id="shop-title")
-        yield Label(f"gold {self._profile.gold}", id="shop-gold")
-        for index, item in enumerate(SHOP_CATALOG, start=1):
-            yield Label(f"{index} {self._row_text(item)}", id=f"shop-item-{index}")
-        yield Label("", id="shop-message")
-        yield Label(
-            "1-7 buy (ranks stack)  0 refund all  Q back without buying",
-            id="shop-hint",
-        )
+        """Paneled title, wallet, numbered rows, message, and key hint."""
+        panel = Vertical(id="shop-panel")
+        panel.border_title = " ༺~*~ ✦ VOID MARKET ✦ ~*~༻ "
+        panel.border_subtitle = " ⊰─~-~-~ ✦ ~-~-~-⊱ "
+        with panel:
+            yield Label("VOID MARKET", id="shop-title")
+            yield Label(f"✦ {self._profile.gold} GOLD BANKED ✦", id="shop-gold")
+            for index, item in enumerate(SHOP_CATALOG, start=1):
+                yield Label(f"{index} {self._row_text(item)}", id=f"shop-item-{index}")
+            yield Label("", id="shop-message")
+            yield Label(
+                "1-7 buy (ranks stack)  0 refund all  Q back without buying",
+                id="shop-hint",
+            )
 
     def _row_text(self, item: ShopItem) -> str:
         """One catalog row with the live rank pips and the next price."""
@@ -2285,7 +2290,9 @@ class ShopScreen(Screen[None]):
 
     def _refresh_shop(self, message: str) -> None:
         """Repaint wallet, rows, and message so repeat buys read fresh."""
-        self.query_one("#shop-gold", Label).update(f"gold {self._profile.gold}")
+        self.query_one("#shop-gold", Label).update(
+            f"✦ {self._profile.gold} GOLD BANKED ✦",
+        )
         for index, item in enumerate(SHOP_CATALOG, start=1):
             self.query_one(f"#shop-item-{index}", Label).update(
                 f"{index} {self._row_text(item)}",
@@ -2297,11 +2304,14 @@ class SettingsScreen(Screen[None]):
     """Shell toggles: palette cycle plus sound/bold/shake switches."""
 
     CSS: ClassVar[str] = (
-        "Screen { background: #0B0B12; color: #CACACA; border: solid #952CF5; }\n"
-        "#settings-title { color: #FF2A2A; text-style: bold; }\n"
-        "#settings-gold { color: #FFD23F; text-style: bold; }\n"
-        "#settings-rows { height: 4; }\n"
-        "#settings-hint { color: #24AEEB; }\n"
+        "Screen { background: #0B0B12; color: #CACACA; }\n"
+        "#settings-panel { width: 80%; height: auto; border: solid #7B2CFB; "
+        "background: #12101F; border-title-align: center; "
+        "border-subtitle-align: center; }\n"
+        "#settings-title { color: #FF2A2A; text-style: bold; text-align: center; }\n"
+        "#settings-gold { color: #FFD23F; text-style: bold; text-align: center; }\n"
+        "#settings-rows { height: 4; text-align: center; }\n"
+        "#settings-hint { color: #24AEEB; text-align: center; }\n"
     )
 
     def __init__(self, profile: Profile, app: TypeSurvivorsApp) -> None:
@@ -2312,11 +2322,21 @@ class SettingsScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Title, wallet, current toggle values, and the key hint."""
-        yield Label("RITUAL CIRCLE", id="settings-title")
-        yield Label(f"gold {self._profile.gold}", id="settings-gold")
-        yield Label(self._rows(), id="settings-rows")
-        yield Label("P palette  S sound  B bold  K shake  Q back", id="settings-hint")
+        """Paneled title, wallet, current toggle values, and the key hint."""
+        panel = Vertical(id="settings-panel")
+        panel.border_title = " ༺~*~ ✥ RITUAL CIRCLE ✥ ~*~༻ "
+        panel.border_subtitle = " ⊰─~-~-~ ✦ ~-~-~-⊱ "
+        with panel:
+            yield Label("RITUAL CIRCLE", id="settings-title")
+            yield Label(
+                f"✦ {self._profile.gold} GOLD BANKED ✦",
+                id="settings-gold",
+            )
+            yield Label(self._rows(), id="settings-rows")
+            yield Label(
+                "P palette  S sound  B bold  K shake  Q back",
+                id="settings-hint",
+            )
 
     def _rows(self) -> str:
         """Render the four toggle values as one multi-line label."""

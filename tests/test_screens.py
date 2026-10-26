@@ -540,6 +540,13 @@ def test_hub_shop_settings_reuse_blood_neon_void_palette() -> None:
     assert "#24AEEB" in HubScreen.CSS
 
 
+def test_shop_settings_speak_hub_voice() -> None:
+    """Shop, settings, and recap wear the hub's glyph frames and panel chrome."""
+    for css in (ShopScreen.CSS, SettingsScreen.CSS, ReportScreen.CSS):
+        for marker in ("#7B2CFB", "#12101F"):
+            assert marker in css
+
+
 def test_pilot_suspend_saves_and_resume_restores_wave(tmp_path: Path) -> None:
     """P then S suspends the wave; a resume launch restores its tallies."""
 
