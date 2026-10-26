@@ -78,10 +78,10 @@ _CORE_PULSE: Final = 4
 _GLYPH_FONT: Final[dict[str, tuple[str, str, str]]] = {
     "E": ("███", "██ ", "███"),
     "I": (" █ ", " █ ", " █ "),
-    "O": (" █ ", "█ █", " █ "),
-    "P": ("███", "█ █", "███"),
+    "O": ("███", "█ █", "███"),
+    "P": ("███", "███", "█  "),
     "R": ("███", "███", "█ █"),
-    "S": (" ██", "███", "██ "),
+    "S": (" ██", " █ ", "██ "),
     "T": ("███", " █ ", " █ "),
     "U": ("█ █", "█ █", "███"),
     "V": ("█ █", "█ █", " █ "),
@@ -89,8 +89,8 @@ _GLYPH_FONT: Final[dict[str, tuple[str, str, str]]] = {
 }
 """3x3 block capitals for the hub banner (only banner letters, nothing else)."""
 
-BANNER_GRADIENT: Final[tuple[str, str, str]] = ("#FF2A2A", "#FFD23F", "#24AEEB")
-"""Banner row colors, top to bottom: red rage, gold glory, void blue."""
+BANNER_GRADIENT: Final[tuple[str, str, str]] = ("#FF2A6D", "#B537A1", "#952CF5")
+"""Banner row colors: luminous blood crimson, arcane amethyst, void purple."""
 
 
 def _render_word(word: str) -> tuple[str, str, str]:

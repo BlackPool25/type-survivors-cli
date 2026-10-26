@@ -69,7 +69,7 @@ from tsurv.juice import (
     trigger_bar_break,
     trigger_kill,
 )
-from tsurv.logo import TAGLINE, decrypt_frames, hub_footer, render_logo
+from tsurv.logo import TAGLINE, decrypt_frames, hub_footer
 from tsurv.metrics import (
     Consistency,
     Seconds,
@@ -1872,10 +1872,19 @@ def _hub_logo_cells(height: int) -> int:
 
 
 def _hub_logo_text(cells_w: int) -> Text | str:
-    """Baked logo cells: styled text in color, plain blocks in mono."""
+    """Ornate gothic crossblade sigil crest anchoring the top of the header."""
     mono = not colors_enabled()
-    baked = render_logo(cells_w, mono=mono)
-    return baked if mono else Text.from_ansi(baked)
+    arm_len = max(min((cells_w - 8) // 2, 20), 4)
+    arm = "═" * arm_len
+    if mono:
+        return f"⚔ {arm} ✦ {arm} ⚔"
+    text = Text()
+    _ = text.append("⚔ ", style="#FF2A6D bold")
+    _ = text.append(f"{arm} ", style="#552288")
+    _ = text.append("✦", style="#FFD23F bold")
+    _ = text.append(f" {arm}", style="#552288")
+    _ = text.append(" ⚔", style="#FF2A6D bold")
+    return text
 
 
 _HUB_DECRYPT_STEP_S: Final = 1 / 30
