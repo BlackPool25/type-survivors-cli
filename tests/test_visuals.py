@@ -388,7 +388,7 @@ def test_pilot_stage_stacks_under_topbar() -> None:
 def test_pilot_kitty_core_centers_on_stage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The kitty core widget anchors on the stage midpoint, both sizes."""
+    """The kitty core paint anchors on the stage midpoint, both sizes."""
 
     async def _scenario(size: tuple[int, int]) -> None:
         monkeypatch.setenv("TSURV_TRUEPIXEL", "1")
@@ -399,12 +399,14 @@ def test_pilot_kitty_core_centers_on_stage(
             assert isinstance(screen, ArenaScreen)
             stage = screen.query_one("#stage", Vertical)
             core = screen.query_one("#core-sprite", TerminalImage)
-            core_cx = core.region.x + core.region.width // 2
-            core_cy = core.region.y + core.region.height // 2
+            # Paint lands at the widget's top-left (~2 cells); the box stays
+            # large so the kitty trim still transmits the PNG.
+            paint_cx = core.region.x + 1
+            paint_cy = core.region.y + 1
             stage_cx = stage.region.x + stage.region.width // 2
             stage_cy = stage.region.y + stage.region.height // 2
-            assert abs(core_cx - stage_cx) <= _CORE_CENTER_TOL
-            assert abs(core_cy - stage_cy) <= _CORE_CENTER_TOL
+            assert abs(paint_cx - stage_cx) <= _CORE_CENTER_TOL
+            assert abs(paint_cy - stage_cy) <= _CORE_CENTER_TOL
 
     asyncio.run(_scenario((80, 24)))
     asyncio.run(_scenario((120, 30)))
@@ -542,9 +544,9 @@ def test_pilot_core_centered_large(
             assert core.image is not None
             assert core.region.width >= _CORE_CELLS_W
             assert core.region.height >= _CORE_CELLS_H
-            center = core.region.x + core.region.width // 2
+            paint_center = core.region.x + 1
             stage_cx = stage.region.x + stage.region.width // 2
-            assert abs(center - stage_cx) <= _CORE_CENTER_TOL
+            assert abs(paint_center - stage_cx) <= _CORE_CENTER_TOL
 
     asyncio.run(_scenario((80, 24)))
     asyncio.run(_scenario((120, 30)))

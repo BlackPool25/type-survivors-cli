@@ -58,6 +58,9 @@ _UNKNOWN_REASON: Final = "no graphics protocol"
 _RADIUS_PER_DISTANCE: Final = 2
 """Canvas cells of ring radius per distance unit (foes ring the core)."""
 
+_EDGE_FRACTION: Final = 0.9
+"""Share of the inscribed-circle reach where fresh foes spawn (near the edge)."""
+
 _SQUASH: Final = 2
 """Vertical squash: cells are ~2x tall, so y radius halves for round rings."""
 
@@ -225,6 +228,18 @@ def world_to_cell(*, x: float, y: float, width: int, height: int) -> tuple[int, 
         min(max(px, 0), max(width - 1, 0)),
         min(max(py, 0), max(height - 1, 0)),
     )
+
+
+def edge_spawn_distance(*, width: int, height: int) -> float:
+    """World units placing a fresh foe at the visible field edge.
+
+    Inverts the ring math (two cells per unit, capped at the inscribed
+    reach): spawning here lands every unit of travel on the canvas, so no
+    distance burns invisibly behind the clamp. Compact halving cancels out,
+    so the same distance reads as the edge fraction on narrow screens too.
+    """
+    reach = max(min(width, height * _SQUASH) // _SQUASH - _SQUASH, 0)
+    return _EDGE_FRACTION * reach / _RADIUS_PER_DISTANCE
 
 
 def art_origin(x: int, y: int, art: tuple[str, ...]) -> tuple[int, int]:

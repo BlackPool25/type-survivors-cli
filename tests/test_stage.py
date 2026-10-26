@@ -45,10 +45,10 @@ _ART_ROWS_MIN: Final = 4
 """Smallest roster art height in pixels (the mite)."""
 _ART_COLS_MIN: Final = 3
 """Smallest roster art width in pixels (the mite)."""
-_CORE_HALF_W: Final = 6
-"""Half the kitty core widget width: centering pilot arithmetic."""
-_CORE_HALF_H: Final = 2
-"""Half the kitty core widget height: centering pilot arithmetic."""
+_CORE_PAINT_HALF_W: Final = 1
+"""Half the painted core PNG width: the kitty trim leaves ~2 cells."""
+_CORE_PAINT_HALF_H: Final = 1
+"""Half the painted core PNG height: the kitty trim leaves ~2 cells."""
 
 
 def test_force_truepixel_enables_kitty() -> None:
@@ -340,8 +340,8 @@ def test_pilot_kitty_mode_positions_sprites_and_diag(
             assert core.image is not None
             cx = stage.size.width // 2
             cy = stage.size.height // 2
-            assert core.styles.offset.x.value == cx - _CORE_HALF_W
-            assert core.styles.offset.y.value == cy - _CORE_HALF_H
+            assert core.styles.offset.x.value == cx - _CORE_PAINT_HALF_W
+            assert core.styles.offset.y.value == cy - _CORE_PAINT_HALF_H
 
     monkeypatch.setenv("TSURV_TRUEPIXEL", "1")
     asyncio.run(_scenario())

@@ -39,6 +39,7 @@ from tsurv.arena import (
     set_boss_wave,
     spawn_count_for_level,
     spawn_enemy,
+    spawn_radius_for_level,
     spawn_wave,
     world_xy,
 )
@@ -96,6 +97,7 @@ from tsurv.stage import (
     art_origin,
     canvas_xy,
     chip_origin,
+    edge_spawn_distance,
     portal_art,
     probe_renderer,
     render_field,
@@ -397,14 +399,23 @@ class ArenaScreen(Screen[None]):
     _SPRITE_W: ClassVar[int] = 10
     """Kitty foe sprite widget width: PNGs fit the same box on all kinds."""
 
-    _SPRITE_H: ClassVar[int] = 3
-    """Kitty foe sprite widget height: rows keep clear of word chips."""
+    _SPRITE_H: ClassVar[int] = 6
+    """Kitty foe sprite widget height: the kitty trim eats 4 rows (see below)."""
 
     _CORE_W: ClassVar[int] = 12
     """Kitty core sprite widget width: the Sanctuary Core renders large."""
 
-    _CORE_H: ClassVar[int] = 4
-    """Kitty core sprite widget height: the Sanctuary Core renders large."""
+    _CORE_H: ClassVar[int] = 6
+    """Kitty core sprite widget height: rows keep the paint transmitting."""
+
+    _PAINT_W: ClassVar[int] = 2
+    """Painted PNG footprint: the kitty row/column trim leaves ~2 cells."""
+
+    _PAINT_H: ClassVar[int] = 2
+    """Painted PNG height: a 48px sprite covers ~2 cells at terminal pixels."""
+
+    _BOSS_PAINT_W: ClassVar[int] = 4
+    """Boss paint width: doubled art covers ~4 cells (same 2-cell height)."""
 
     CSS: ClassVar[str] = (
         "Screen { background: #0B0B12; color: #CACACA; }\n"
@@ -412,8 +423,8 @@ class ArenaScreen(Screen[None]):
         "#arena { height: 1fr; border: solid #952CF5; }\n"
         "#stage { height: 1fr; }\n"
         "#field { width: 1fr; height: 1fr; }\n"
-        ".foe-sprite { position: absolute; width: 10; height: 3; }\n"
-        "#core-sprite { position: absolute; width: 12; height: 4; }\n"
+        ".foe-sprite { position: absolute; width: 10; height: 6; }\n"
+        "#core-sprite { position: absolute; width: 12; height: 6; }\n"
         ".foe-chip { position: absolute; width: auto; height: 1; }\n"
         "#bossbanner { width: 1fr; height: 2; color: #FF2A2A; "
         "text-style: bold; text-align: center; }\n"
@@ -493,6 +504,7 @@ class ArenaScreen(Screen[None]):
             for _ in range(MAX_BOSS_BARS)
         ]
         self._pick: RendererPick = probe_renderer()
+        self._ring_seated: bool = False
         self._last_wave: int = state.wave
         self._advance_until: float = 0.0
         self._drift_until: float = 0.0
@@ -746,6 +758,35 @@ class ArenaScreen(Screen[None]):
         except Exception as exc:  # noqa: BLE001 - panic path catches everything
             self._crash(exc)
 
+    def _spawn_distance(self) -> float:
+        """Ring distance: the visible field edge, never below the level floor."""
+        if not self.is_mounted:
+            return spawn_radius_for_level(self._arena.wave)
+        stage = self.query_one("#stage", Vertical)
+        width = stage.content_size.width
+        height = stage.content_size.height
+        if width <= 0 or height <= 0:
+            return spawn_radius_for_level(self._arena.wave)
+        edge = edge_spawn_distance(width=width, height=height)
+        return max(spawn_radius_for_level(self._arena.wave), edge)
+
+    def _seat_initial_ring(self) -> None:
+        """Push pre-layout foes out to the live edge (one-shot, distance only)."""
+        if self._ring_seated:
+            return
+        stage = self.query_one("#stage", Vertical)
+        if stage.content_size.width <= 0 or stage.content_size.height <= 0:
+            return
+        target = self._spawn_distance()
+        self._arena = replace(
+            self._arena,
+            enemies=tuple(
+                replace(foe, distance=max(foe.distance, target))
+                for foe in self._arena.enemies
+            ),
+        )
+        self._ring_seated = True
+
     def _step(self, dt: float = 1 / 60) -> None:
         if self.paused or self._arena.hp <= 0.0:
             return
@@ -754,6 +795,7 @@ class ArenaScreen(Screen[None]):
             # Boss entrance and hit-stop: overlay only, sim clocks hold.
             self._refresh()
             return
+        self._seat_initial_ring()
         now = time.monotonic()
         dt *= time_scale(self._juice, now)
         self._run_clock += dt
@@ -818,7 +860,7 @@ class ArenaScreen(Screen[None]):
                 Word(text=WordText(text), tier=Tier.T3),
                 kind=EnemyKind.BOSS,
                 hp_words=bars,
-                distance=8.0,
+                distance=self._spawn_distance(),
             )
             self._arena = self._place_last(self._arena)
             now = time.monotonic()
@@ -865,6 +907,16 @@ class ArenaScreen(Screen[None]):
             self._arena.wave,
             start_angle=self._deal_angle(),
             kind=kind,
+        )
+        floor = self._spawn_distance()
+        self._arena = replace(
+            self._arena,
+            enemies=tuple(
+                foe
+                if index < before
+                else replace(foe, distance=max(foe.distance, floor))
+                for index, foe in enumerate(self._arena.enemies)
+            ),
         )
         now = time.monotonic()
         for foe in self._arena.enemies[before:]:
@@ -1343,8 +1395,8 @@ class ArenaScreen(Screen[None]):
             ),
         )
         core_widget.styles.offset = (
-            cx - self._CORE_W // 2,
-            cy - self._CORE_H // 2,
+            cx - self._PAINT_W // 2,
+            cy - self._PAINT_H // 2,
         )
         foes = self._arena.enemies
         for index in range(MAX_FOES):
@@ -1373,15 +1425,19 @@ class ArenaScreen(Screen[None]):
                 compact=compact,
             )
             x = min(max(x + shake, 0), width - 1)
-            tx = max(x - self._SPRITE_W // 2, 0)
-            ty = max(y - self._SPRITE_H // 2, 0)
+            if foe.kind is EnemyKind.BOSS:
+                paint_w = self._BOSS_PAINT_W
+            else:
+                paint_w = self._PAINT_W
+            tx = max(x - paint_w // 2, 0)
+            ty = max(y - self._PAINT_H // 2, 0)
             sprite.styles.offset = (tx, ty)
             chip = self._chip_text(foe, frame_tick, now, shake=shake)
             chip_x, chip_y = chip_origin(
                 tx,
                 ty,
-                art_w=self._SPRITE_W,
-                art_h=self._SPRITE_H,
+                art_w=paint_w,
+                art_h=self._PAINT_H,
                 chip_len=len(chip.plain),
                 width=width,
             )
