@@ -436,7 +436,12 @@ def set_boss_wave(state: ArenaState, *, flag: bool) -> ArenaState:
 
 def clear_lock(state: ArenaState) -> ArenaState:
     """Drop the current target lock (Esc), keeping everything else."""
-    return replace(state, current=None, typed=0)
+    return replace(state, current=None, typed=0, stunned_until=0.0)
+
+
+def reset_word(state: ArenaState) -> ArenaState:
+    """Drop the target lock and cancel any active typo stun immediately."""
+    return replace(state, current=None, typed=0, stunned_until=0.0)
 
 
 def chain_lightning(

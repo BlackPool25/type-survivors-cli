@@ -17,6 +17,7 @@ from tsurv.arena import (
     handle_keystroke,
     initial_arena,
     merge_window,
+    reset_word,
     roll_drop,
     spawn_enemy,
 )
@@ -222,6 +223,19 @@ def test_clear_lock_releases_target() -> None:
     assert cleared.current is None
     assert cleared.typed == 0
     assert len(cleared.enemies) == 1
+
+
+def test_reset_word_clears_stun_and_target() -> None:
+    """Backspace instantly clears target, typed progress, and typo stun."""
+    state = spawn_enemy(initial_arena(), _word("cat"))
+    state, _ = handle_keystroke(state, "c", _NOW)
+    # Trigger a typo
+    state, _ = handle_keystroke(state, "x", _NOW)
+    assert state.stunned_until > _NOW
+    cleared = reset_word(state)
+    assert cleared.current is None
+    assert cleared.typed == 0
+    assert cleared.stunned_until == 0.0
 
 
 def test_chain_lightning_arcs_to_nearest_others() -> None:
