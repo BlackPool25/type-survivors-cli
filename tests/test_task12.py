@@ -12,11 +12,21 @@ from typing import Final
 import pytest
 from par_textual_image import TerminalImage
 from PIL import Image as PILImage
+from textual.containers import Vertical
 
-from tsurv.app import SPAWN_OUTSIDE_MARGIN, ArenaScreen, TypeSurvivorsApp, sprite_image
+from tsurv.app import (
+    MAX_FOES,
+    SPAWN_OUTSIDE_MARGIN,
+    ArenaScreen,
+    TypeSurvivorsApp,
+    sprite_image,
+)
 from tsurv.arena import EnemyKind, seconds_to_impact, spawn_radius_for_level
 from tsurv.stage import canvas_xy, edge_spawn_distance
 from tsurv.visuals import sprite_path
+
+_SPRITE_PX: Final = 90
+"""Every sprite paints at 90px: trimmed art centered on a 45px canvas."""
 
 _WIDE_SIZE: Final = (200, 50)
 """Ghostty-wide pilot viewport from the screenshot evidence."""
@@ -257,3 +267,46 @@ def test_travel_seconds_match_distance_over_speed() -> None:
             assert seconds_to_impact(kind, distance) == pytest.approx(
                 distance / speed,
             )
+
+
+def test_roster_crops_transparent_margins() -> None:
+    """Tight boxes: clear margins shrink the opaque tile around each foe.
+
+    The protocol layer flattens to RGB, so every sprite is an opaque box.
+    Cropping clear margins keeps the box hugging the art: smaller boxes
+    overlap the core less and halo less against the void.
+    """
+    for filename in _ROSTER:
+        pic = sprite_image(filename)
+        assert pic is not None
+        assert pic.size == (_SPRITE_PX, _SPRITE_PX)
+
+
+def test_core_paints_above_foes_and_below_chips(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DOM order stacks foes, then the core, then the word chips on top.
+
+    A foe closing in slides *under* the Sanctuary Core instead of hiding
+    it, and the typed word chip is always the topmost paint.
+    """
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(
+            initial_words=("cat",),
+            spawn_enabled=False,
+            seed=11,
+        )
+        async with app.run_test(size=_WIDE_SIZE) as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            stage = screen.query_one("#stage", Vertical)
+            ids = [child.id for child in stage.children]
+            core_at = ids.index("core-sprite")
+            foe_at = [ids.index(f"foe-sprite-{i}") for i in range(MAX_FOES)]
+            chip_at = [ids.index(f"foe-word-{i}") for i in range(MAX_FOES)]
+            assert max(foe_at) < core_at < min(chip_at)
+
+    monkeypatch.setenv("TSURV_TRUEPIXEL", "1")
+    asyncio.run(_scenario())

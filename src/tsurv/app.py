@@ -204,13 +204,19 @@ _sprite_cache: dict[str, Image.Image] = {}
 _ARENA_VOID: Final = (11, 11, 18)
 """Backdrop RGB of the arena void: kitty-safe sprite backing."""
 
+_SPRITE_SIDE: Final = 45
+"""Post-trim canvas side: 90px paints land the same natural cells as the
+96px originals at reference cell size, so the protocol's fit math (and its
+column trim) behaves exactly as before, only with tighter boxes."""
+
 
 def sprite_image(filename: str) -> Image.Image | None:
-    """Load sprite bytes once, cached; art doubles: size reads threat.
+    """Load sprite bytes once, cached; trim margins, square-pad, back void.
 
-    Kitty transmits RGB (alpha arrives as pure black), so art is composited
-    onto the arena void here: the frame blends seamlessly, art stays exact.
-    Doubling to 96px fills the 10x6 widget's fit box with a square paint.
+    The protocol layer flattens to RGB, so every sprite paints as an opaque
+    box: trimming the clear margins keeps the box hugging the art, so foes
+    stop haloing against the void and stop swallowing the core. Square
+    padding keeps the paint square in the 10x6 widget's fit box.
     """
     if filename not in _sprite_cache:
         path = sprite_path(filename)
@@ -219,7 +225,13 @@ def sprite_image(filename: str) -> Image.Image | None:
         with Image.open(path) as handle:
             pic = handle.convert("RGBA")
             _ = pic.load()
-        pic = ImageOps.scale(pic, 2, resample=Image.Resampling.NEAREST)
+        trimmed = pic.getbbox()
+        if trimmed is not None:
+            pic = pic.crop(trimmed)
+        side = max(pic.size[0], pic.size[1], _SPRITE_SIDE)
+        square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        square.paste(pic, ((side - pic.width) // 2, (side - pic.height) // 2))
+        pic = ImageOps.scale(square, 2, resample=Image.Resampling.NEAREST)
         void = Image.new("RGBA", pic.size, (*_ARENA_VOID, 255))
         _sprite_cache[filename] = Image.alpha_composite(void, pic)
     return _sprite_cache[filename]
@@ -816,12 +828,13 @@ class ArenaScreen(Screen[None]):
             with Vertical(id="stage"):
                 yield ArenaCanvas(widget_id="field")
                 if true_pixel:
-                    yield TerminalImage(id="core-sprite")
                     for index in range(MAX_FOES):
                         yield TerminalImage(
                             id=f"foe-sprite-{index}",
                             classes="foe-sprite",
                         )
+                    yield TerminalImage(id="core-sprite")
+                    for index in range(MAX_FOES):
                         yield Label("", id=f"foe-word-{index}", classes="foe-chip")
             with Vertical(id="bossbars"):
                 yield from self._boss_bars
