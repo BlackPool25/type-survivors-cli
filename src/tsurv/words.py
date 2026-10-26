@@ -279,6 +279,11 @@ def target_length(ability_wpm: float) -> float:
     return min(max(ability_wpm / 5.0, MIN_TARGET_LEN), MAX_TARGET_LEN)
 
 
+def max_len_for_wave(wave: int) -> int | None:
+    """Word-length rail by wave: wave 1 stays short, later waves run free."""
+    return OPENING_MAX_LEN if wave <= 1 else None
+
+
 def deal_score(
     word: str,
     target: float,

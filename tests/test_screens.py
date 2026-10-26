@@ -64,6 +64,7 @@ from tsurv.screens import (
     update_settings,
 )
 from tsurv.words import (
+    OPENING_MAX_LEN,
     TIER_WORDS,
     WEAK_KEY_BOOST,
     Corruption,
@@ -791,3 +792,25 @@ def test_build_arena_opens_gentle_for_veterans() -> None:
         profile=Profile(skill_wpm=_ROOKIE_WPM),
     )
     assert rookie._build_arena().ability == _ROOKIE_WPM  # noqa: SLF001
+
+
+def test_pilot_wave_one_spawns_short_grunts() -> None:
+    """Wave 1 rails: every spawned word is short and every foe a grunt."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(initial_words=(), spawn_enabled=True, seed=7)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            for _ in range(30):
+                screen.tick(0.5)
+                if screen.arena_state.enemies:
+                    break
+            foes = screen.arena_state.enemies
+            assert foes
+            for foe in foes:
+                assert len(str(foe.word.text)) <= OPENING_MAX_LEN
+                assert foe.kind is EnemyKind.GRUNT
+
+    asyncio.run(_scenario())

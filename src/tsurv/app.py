@@ -179,13 +179,13 @@ from tsurv.visuals import (
     sprite_path,
 )
 from tsurv.words import (
-    OPENING_MAX_LEN,
     TIER_WORDS,
     Tier,
     Word,
     WordText,
     chunk_boss_sentence,
     deal_word,
+    max_len_for_wave,
     pick_word,
 )
 
@@ -1119,7 +1119,7 @@ class ArenaScreen(Screen[None]):
             else ()
         )
         ability = service_wpm(self._kill_samples) or self._ability
-        opening = OPENING_MAX_LEN if self._arena.wave <= 1 else None
+        opening = max_len_for_wave(self._arena.wave)
         word = deal_word(
             tier,
             (),

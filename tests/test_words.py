@@ -26,6 +26,7 @@ from tsurv.words import (
     chunk_boss_sentence,
     deal_score,
     deal_word,
+    max_len_for_wave,
     pick_word,
     target_length,
     weak_hits,
@@ -359,3 +360,10 @@ def test_deal_word_honors_opening_cap() -> None:
             rng=random.Random(),  # noqa: S311 - unseeded single draw
         )
         assert len(word.text) <= OPENING_MAX_LEN
+
+
+def test_max_len_for_wave_rails_wave_one() -> None:
+    """Wave 1 caps words at four letters; later waves run free."""
+    assert max_len_for_wave(1) == OPENING_MAX_LEN
+    assert max_len_for_wave(0) == OPENING_MAX_LEN
+    assert max_len_for_wave(2) is None
