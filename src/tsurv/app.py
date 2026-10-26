@@ -45,13 +45,16 @@ from tsurv.arena import (
 )
 from tsurv.audio import (
     AudioConfig,
+    MusicTrack,
     Sound,
     default_enabled,
     find_player,
     play_event,
+    play_music_track,
     start_ambient,
+    stop_music_track,
 )
-from tsurv.combat import EnemyId, Kill, rolling_wpm, spawn_interval
+from tsurv.combat import Advanced, EnemyId, Kill, TypoStun, rolling_wpm, spawn_interval
 from tsurv.grammar import GrammarError, generate_boss_sentence
 from tsurv.items import nova_charge, nova_ready
 from tsurv.juice import (
@@ -738,12 +741,17 @@ class ArenaScreen(Screen[None]):
             self._audio_player,
             enabled=self._audio_enabled,
         )
+        if self._audio_enabled():
+            play_music_track(
+                MusicTrack.BOSS if self._arena.boss_wave else MusicTrack.TIER_1,
+            )
         self._refresh()
         self.check_viewport()
         _ = self.set_interval(1 / 60, self._tick)
 
     def on_unmount(self) -> None:
-        """Silence the drone when the arena leaves the stack."""
+        """Silence the drone and music when the arena leaves the stack."""
+        stop_music_track()
         if self._stop_ambient is not None:
             self._stop_ambient()
             self._stop_ambient = None
@@ -887,9 +895,15 @@ class ArenaScreen(Screen[None]):
                     wave=self._arena.wave + 1,
                 )
                 self._wave_clock = 0.0
+                play_event(self._audio_config(), Sound.WAVE_CLEAR)
+                if self._audio_enabled():
+                    play_music_track(
+                        MusicTrack.TIER_2 if self._arena.wave >= 6 else MusicTrack.TIER_1,
+                    )
         elif self._wave_clock >= WAVE_SECONDS:
             self._arena = replace(self._arena, wave=self._arena.wave + 1)
             self._wave_clock = 0.0
+            play_event(self._audio_config(), Sound.WAVE_CLEAR)
             self._calibrate_wave()
         if self._spawn_enabled:
             self._clock += dt
@@ -939,6 +953,8 @@ class ArenaScreen(Screen[None]):
             self._boss_banner_until = now + self._BOSS_BANNER_S
             self._juice = replace(self._juice, trauma=1.0)
             play_event(self._audio_config(), Sound.BOSS)
+            if self._audio_enabled():
+                play_music_track(MusicTrack.BOSS)
             return
         tier = mercy_tier(
             Tier.T1 if self._arena.wave <= 1 else Tier.T2,
@@ -1013,6 +1029,7 @@ class ArenaScreen(Screen[None]):
         if event.key in ("backspace", "delete"):
             if not self.paused:
                 self._arena = reset_word(self._arena)
+                play_event(self._audio_config(), Sound.BACKSPACE)
                 self._refresh()
             return
         if event.key == "enter" and self.paused:
@@ -1039,8 +1056,13 @@ class ArenaScreen(Screen[None]):
         if isinstance(outcome, Kill):
             self._kill_times.append(now)
             play_event(self._audio_config(), Sound.KILL)
+            play_event(self._audio_config(), Sound.WORD_POP)
             self._resolve_drop(before, outcome.target)
             self._juice_hit(before, outcome, now)
+        elif isinstance(outcome, Advanced):
+            play_event(self._audio_config(), Sound.CLICK)
+        elif isinstance(outcome, TypoStun):
+            play_event(self._audio_config(), Sound.TYPO_JAM)
         self._refresh()
 
     def _handle_command_key(self, ch: str) -> bool:
@@ -1784,10 +1806,16 @@ class HubScreen(Screen[None]):
     def on_mount(self) -> None:
         """Paint the list, pin any panic banner, then decrypt the tagline."""
         self._refresh_hub()
+        if self._app_ref.profile.settings.sound_on:
+            play_music_track(MusicTrack.MENU)
         if self._app_ref.crash_message is not None:
             self.show_crash(self._app_ref.crash_message)
         if self._app_ref.claim_hub_intro():
             self._play_decrypt()
+
+    def on_unmount(self) -> None:
+        """Stop menu music when leaving the hub screen."""
+        stop_music_track()
 
     def show_crash(self, message: str) -> None:
         """Pin the panic banner: the error plus the resume-where-you-left-off hint."""

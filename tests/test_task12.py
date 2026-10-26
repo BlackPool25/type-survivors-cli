@@ -13,7 +13,7 @@ import pytest
 from par_textual_image import TerminalImage
 from PIL import Image as PILImage
 
-from tsurv.app import ArenaScreen, TypeSurvivorsApp, sprite_image
+from tsurv.app import SPAWN_OUTSIDE_MARGIN, ArenaScreen, TypeSurvivorsApp, sprite_image
 from tsurv.arena import EnemyKind, seconds_to_impact, spawn_radius_for_level
 from tsurv.stage import canvas_xy, edge_spawn_distance
 from tsurv.visuals import sprite_path
@@ -237,7 +237,7 @@ def test_spawned_foes_land_near_field_edge(
                     width=width,
                     height=height,
                 )
-                assert foe.distance == pytest.approx(want)
+                assert foe.distance == pytest.approx(want + SPAWN_OUTSIDE_MARGIN)
                 x, y = canvas_xy(
                     angle=foe.angle,
                     distance=foe.distance,

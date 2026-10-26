@@ -12,6 +12,7 @@ from textual.containers import Center, Middle
 from textual.widgets import Button, Label, Sparkline
 
 from tsurv.app import (
+    SPAWN_OUTSIDE_MARGIN,
     ArenaScreen,
     ReportScreen,
     TypeSurvivorsApp,
@@ -123,7 +124,7 @@ def test_spawn_foe_deals_simultaneous_wave() -> None:
                     width=width,
                     height=height,
                 )
-                assert foe.distance == max(radius, edge)
+                assert foe.distance == max(radius, edge) + SPAWN_OUTSIDE_MARGIN
             assert _angular_gap(foes[0].angle, foes[1].angle) >= _MIN_SEPARATION
 
     asyncio.run(_scenario())

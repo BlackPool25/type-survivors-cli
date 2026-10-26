@@ -9,7 +9,7 @@ import pytest
 from par_textual_image import TerminalImage
 from rich.console import Console
 
-from tsurv.app import ArenaScreen, TypeSurvivorsApp
+from tsurv.app import SPAWN_OUTSIDE_MARGIN, ArenaScreen, TypeSurvivorsApp
 from tsurv.arena import (
     LEAK_DAMAGE,
     EnemyKind,
@@ -126,7 +126,9 @@ def test_edge_spawn_distance_grows_with_viewport_wide(
     async def _scenario() -> None:
         distance, angle, width, height = await _fresh_wave1_foe(_WIDE_SIZE)
         edge = edge_spawn_distance(angle=angle, width=width, height=height)
-        assert distance == pytest.approx(max(spawn_radius_for_level(1), edge))
+        assert distance == pytest.approx(
+            max(spawn_radius_for_level(1), edge) + SPAWN_OUTSIDE_MARGIN,
+        )
         x, y = canvas_xy(
             angle=angle,
             distance=distance,
@@ -150,7 +152,9 @@ def test_edge_spawn_distance_keeps_floor_small(
     async def _scenario() -> None:
         distance, angle, width, height = await _fresh_wave1_foe(_SMALL_SIZE)
         edge = edge_spawn_distance(angle=angle, width=width, height=height)
-        assert distance == pytest.approx(max(spawn_radius_for_level(1), edge))
+        assert distance == pytest.approx(
+            max(spawn_radius_for_level(1), edge) + SPAWN_OUTSIDE_MARGIN,
+        )
 
     monkeypatch.setenv("TSURV_TRUEPIXEL", "0")
     asyncio.run(_scenario())
