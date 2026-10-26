@@ -9,7 +9,10 @@ testable; only :class:`ArenaCanvas` touches Textual.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import select
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from math import cos, sin
@@ -21,7 +24,7 @@ from textual.widget import Widget
 from tsurv.arena import EnemyKind
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from rich.style import Style
 
@@ -39,6 +42,15 @@ _TERM_ENV: Final = "TERM"
 
 _GRAPHIC_TERMS: Final = ("ghostty", "kitty", "wezterm", "vscode", "xterm-ghostty")
 """Allowlist: terminals known to speak the kitty graphics protocol."""
+
+_TTY_QUERY: Final = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\"
+"""Kitty support probe: a 1px query upload the terminal never stores."""
+
+_TTY_QUERY_TIMEOUT_S: Final = 0.1
+"""Probe wait: a local terminal answers in ~1ms; silence reads as cells."""
+
+_TTY_REPLY_MAX: Final = 64
+"""Reply cap: the `;OK` verdict lands in the first few bytes or never."""
 
 _UNKNOWN_REASON: Final = "no graphics protocol"
 """Diagnostics reason when nothing advertises true-pixel support."""
@@ -76,12 +88,13 @@ def select_renderer(
     par_graphics: str | None = None,
     term_program: str = "",
     term: str = "",
+    tty_kitty: bool = False,
 ) -> RendererPick:
-    """Pick the sprite renderer: force flag, par hint, allowlist, cells.
+    """Pick the sprite renderer: force flag, par hint, allowlist, TTY, cells.
 
-    No TTY query: par-textual-image's escape probe only works before
-    Textual's input thread starts, so a widget-time probe always misses.
-    The allowlist names terminals that advertise kitty graphics instead.
+    `tty_kitty` is the live query answer (`query_kitty_graphics`): it only
+    fills the allowlist-miss slot, so explicit pins always win. Ghostty behind
+    tmux/ssh strips its env ads; the 0.1s query is what still finds it.
     """
     if truepixel == "1":
         kind, reason = RendererKind.KITTY, f"{_TRUEPIXEL_ENV}=1"
@@ -94,22 +107,78 @@ def select_renderer(
     else:
         kind, reason = RendererKind.CELLS, _UNKNOWN_REASON
         hay = f"{term_program} {term}".lower()
-        for token in _GRAPHIC_TERMS:
-            if token in hay:
-                kind, reason = RendererKind.KITTY, token
-                break
+        token = next((name for name in _GRAPHIC_TERMS if name in hay), None)
+        if token is not None:
+            kind, reason = RendererKind.KITTY, token
+        elif tty_kitty:
+            kind, reason = RendererKind.KITTY, "tty-query"
     return RendererPick(kind, reason)
 
 
-def probe_renderer(env: Mapping[str, str] | None = None) -> RendererPick:
-    """Startup probe: feed the live environment into the pure selector."""
+def query_kitty_graphics(*, timeout_s: float = _TTY_QUERY_TIMEOUT_S) -> bool:
+    """Ask the controlling terminal for kitty graphics; silence means no.
+
+    Sends the spec's query action (a 1px upload the terminal neither stores
+    nor displays) and waits for the `;OK` reply. Anything unexpected — no
+    tty, a short write, a timeout — is a clean False, and no DA1 fence is
+    sent, so a silent terminal keeps zero unread bytes behind. A widget-time
+    race with Textual's reader degrades to the cells fallback, never worse.
+    """
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR)
+    except OSError:
+        return False
+    try:
+        return _await_tty_ok(fd, timeout_s)
+    finally:
+        with contextlib.suppress(OSError):
+            os.close(fd)
+
+
+def _await_tty_ok(fd: int, timeout_s: float) -> bool:
+    """Write the probe and wait for `;OK` (any I/O surprise reads as no)."""
+    try:
+        _ = os.write(fd, _TTY_QUERY)
+        data = bytearray()
+        end = time.monotonic() + timeout_s
+        while len(data) < _TTY_REPLY_MAX:
+            remaining = end - time.monotonic()
+            if remaining <= 0.0:
+                break
+            ready, _, _ = select.select([fd], [], [], remaining)
+            if not ready:
+                break
+            chunk = os.read(fd, _TTY_REPLY_MAX - len(data))
+            if not chunk:
+                break
+            data += chunk
+            if b";OK" in data:
+                break
+    except OSError:
+        return False
+    return b";OK" in data
+
+
+def probe_renderer(
+    env: Mapping[str, str] | None = None,
+    *,
+    query_tty: Callable[[], bool] = query_kitty_graphics,
+) -> RendererPick:
+    """Startup probe: env pins first, then the TTY query, then cells."""
     live = os.environ if env is None else env
-    return select_renderer(
+    pick = select_renderer(
         truepixel=live.get(_TRUEPIXEL_ENV),
         par_graphics=live.get(_PAR_ENV),
         term_program=live.get(_TERM_PROGRAM_ENV, ""),
         term=live.get(_TERM_ENV, ""),
     )
+    if (
+        pick.kind is RendererKind.CELLS
+        and pick.reason == _UNKNOWN_REASON
+        and query_tty()
+    ):
+        return RendererPick(RendererKind.KITTY, "tty-query")
+    return pick
 
 
 def canvas_xy(  # noqa: PLR0913 - ring math needs angle, distance, framing

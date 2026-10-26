@@ -18,7 +18,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Center, Middle, Vertical
 from textual.screen import Screen
-from textual.widgets import Label, ProgressBar
+from textual.widgets import Button, Label, ProgressBar, Sparkline
 
 from tsurv.arena import (
     ArenaEnemy,
@@ -37,7 +37,9 @@ from tsurv.arena import (
     roll_drop,
     seconds_to_impact,
     set_boss_wave,
+    spawn_count_for_level,
     spawn_enemy,
+    spawn_wave,
     world_xy,
 )
 from tsurv.combat import EnemyId, Kill, rolling_wpm, spawn_interval
@@ -58,9 +60,11 @@ from tsurv.juice import (
 from tsurv.logo import TAGLINE, decrypt_frames, hub_footer, render_logo
 from tsurv.metrics import (
     Consistency,
+    Seconds,
     Tally,
     consistency,
     leak_missed,
+    net_wpm,
     tally_accuracy,
     tally_of,
 )
@@ -480,6 +484,7 @@ class ArenaScreen(Screen[None]):
         self._wave_clock: float = 0.0
         self._kill_times: list[float] = []
         self._press_times: list[float] = []
+        self._best_streak: int = 0
         self._nova_good_seconds: float = 0.0
         self._tally: Tally = Tally()
         self._killer: str | None = None
@@ -580,6 +585,16 @@ class ArenaScreen(Screen[None]):
         return tuple(
             count * _WPM_PER_PRESS_SECOND for _, count in sorted(buckets.items())
         )
+
+    @property
+    def best_streak(self) -> int:
+        """Highest streak this run (feeds the recap table)."""
+        return self._best_streak
+
+    @property
+    def wpm_trail(self) -> tuple[float, ...]:
+        """Per-second WPM trail for the recap chart (idle never counts)."""
+        return self._wpm_samples(time.monotonic())
 
     @property
     def nova_armed(self) -> bool:
@@ -827,8 +842,34 @@ class ArenaScreen(Screen[None]):
             overdue_keys=overdue,
         )
         kind = EnemyKind.GRUNT if len(shown) % 3 else EnemyKind.MITE
-        self._arena = spawn_enemy(self._arena, word, kind=kind)
-        self._arena = self._place_last(self._arena)
+        room = MAX_FOES - len(self._arena.enemies)
+        count = min(spawn_count_for_level(self._arena.wave), room)
+        if count <= 0:
+            return
+        dealt = [*shown]
+        words: list[Word] = []
+        for _ in range(count):
+            word = pick_word(
+                tier,
+                (),
+                dealt,
+                weak_keys=self._weak_keys,
+                overdue_keys=overdue,
+            )
+            words.append(word)
+            dealt.append(str(word.text))
+        before = len(self._arena.enemies)
+        self._arena = spawn_wave(
+            self._arena,
+            tuple(words),
+            self._arena.wave,
+            start_angle=self._deal_angle(),
+            kind=kind,
+        )
+        now = time.monotonic()
+        for foe in self._arena.enemies[before:]:
+            self._spawned_total += 1
+            self._spawned_at[foe.id] = now
 
     async def on_key(self, event: events.Key) -> None:
         """Type-to-target: printable chars feed the arena, P pauses."""
@@ -1000,6 +1041,7 @@ class ArenaScreen(Screen[None]):
     def _refresh(self) -> None:
         """Repaint header, sprites, foes, fx ribbon, boss bars, flags."""
         state = self._arena
+        self._best_streak = max(self._best_streak, state.streak)
         now = time.monotonic()
         overlay = juice_overlay(self._juice, now)
         frame_tick = int(self._run_clock * BOB_FPS)
@@ -1358,16 +1400,52 @@ class ArenaScreen(Screen[None]):
                 bar.update(total=1, progress=1)
 
 
+def report_stats_text(  # noqa: PLR0913 - a recap row needs the full row
+    *,
+    net: float,
+    accuracy: float,
+    consistency: float | None,
+    best_streak: int,
+    kills: int,
+    level: int,
+) -> Text:
+    """Six recap rows: net WPM, accuracy, consistency, streak, kills, level.
+
+    Under-ten-sample consistency reads as a shrug, never as a number.
+    """
+    consist = (
+        f"consistency {consistency:.0f}" if consistency is not None else "consistency ~"
+    )
+    text = Text()
+    _ = text.append(f"net {net:.1f} wpm\n")
+    _ = text.append(f"accuracy {accuracy:.0%}\n")
+    _ = text.append(f"{consist}\n")
+    _ = text.append(f"best streak {best_streak}\n")
+    _ = text.append(f"kills {kills}\n")
+    _ = text.append(f"level {level}")
+    return text
+
+
 class ReportScreen(Screen[None]):
-    """Post-run recap card: tallies plus S for shop, Q back to the arena."""
+    """Post-run recap: centered card, WPM chart, stats, retry, S/Q keys."""
 
     CSS: ClassVar[str] = (
         "Screen { background: #0B0B12; color: #CACACA; }\n"
-        "#report-card { height: 6; }\n"
-        "#report-hint { height: 1; color: #952CF5; }\n"
+        "#report-center { height: 1fr; }\n"
+        "#report-middle { width: 1fr; align-horizontal: center; }\n"
+        f"#report-column {{ width: 1fr; height: auto; max-width: {HUB_COLUMN_MAX}; "
+        "align: center middle; }\n"
+        "#report-score { width: 1fr; height: 1; text-align: center; }\n"
+        "#report-kills { width: 1fr; height: 1; text-align: center; }\n"
+        "#report-wave { width: 1fr; height: 1; text-align: center; }\n"
+        "#report-card { width: 1fr; height: 6; text-align: center; }\n"
+        "#report-spark { width: 1fr; height: 3; }\n"
+        "#report-stats { width: 1fr; height: 6; text-align: center; }\n"
+        "#report-hint { width: 1fr; height: 1; color: #952CF5; "
+        "text-align: center; }\n"
     )
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - the recap carries the full run snapshot
         self,
         score: int,
         kills: int,
@@ -1375,14 +1453,24 @@ class ReportScreen(Screen[None]):
         *,
         card: str = "",
         app: TypeSurvivorsApp | None = None,
+        wpm: tuple[float, ...] = (),
+        net: float = 0.0,
+        accuracy: float = 1.0,
+        consistency: float | None = None,
+        best_streak: int = 0,
     ) -> None:
-        """Snapshot the run tallies; the app link powers S/Q navigation."""
+        """Snapshot the run tallies; the app link powers R/S/Q navigation."""
         super().__init__()
         self._score: int = score
         self._kills: int = kills
         self._wave: int = wave
         self._card: str = card
         self._app_ref: TypeSurvivorsApp | None = app
+        self._wpm: tuple[float, ...] = wpm
+        self._net: float = net
+        self._accuracy: float = accuracy
+        self._consistency: float | None = consistency
+        self._best_streak: int = best_streak
 
     @property
     def score_line(self) -> str:
@@ -1399,23 +1487,60 @@ class ReportScreen(Screen[None]):
         """Wave tally line for assertions."""
         return f"wave {self._wave}"
 
+    @property
+    def wpm_trail(self) -> tuple[float, ...]:
+        """Per-second WPM trail feeding the chart (empty reads blank)."""
+        return self._wpm
+
+    @property
+    def card_text(self) -> str:
+        """Recap card body for assertions (carries the WPM graph)."""
+        return self._card
+
     @override
     def compose(self) -> ComposeResult:
-        """Tallies, the recap card, and the S/Q hint."""
-        yield Label(self.score_line, id="report-score")
-        yield Label(self.kills_line, id="report-kills")
-        yield Label(self.wave_line, id="report-wave")
-        yield Label(self._card, id="report-card")
-        yield Label("S shop  Q back to arena", id="report-hint")
+        """Centered tallies, card, WPM chart, stats, retry, and the key hint."""
+        with (
+            Center(id="report-center"),
+            Middle(id="report-middle"),
+            Vertical(
+                id="report-column",
+            ),
+        ):
+            yield Label(self.score_line, id="report-score")
+            yield Label(self.kills_line, id="report-kills")
+            yield Label(self.wave_line, id="report-wave")
+            yield Label(self._card, id="report-card")
+            yield Sparkline(self._wpm, id="report-spark")
+            yield Label(
+                report_stats_text(
+                    net=self._net,
+                    accuracy=self._accuracy,
+                    consistency=self._consistency,
+                    best_streak=self._best_streak,
+                    kills=self._kills,
+                    level=self._wave,
+                ),
+                id="report-stats",
+            )
+            yield Button("Retry (R)", id="report-retry")
+            yield Label("R retry · S shop · Q back to arena", id="report-hint")
 
     async def on_key(self, event: events.Key) -> None:
-        """S detours to the shop; Q restarts back on the arena."""
+        """R retries fresh; S detours to the shop; Q restarts the arena."""
         if self._app_ref is None:
             return
-        if event.key == "s":
+        if event.key == "r":
+            self._app_ref.retry_run()
+        elif event.key == "s":
             self._app_ref.open_shop()
         elif event.key == "q":
             self._app_ref.return_to_arena()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Deal a fresh run from the Retry button (same as the R key)."""
+        if event.button.id == "report-retry" and self._app_ref is not None:
+            self._app_ref.retry_run()
 
 
 _FULL_LOGO_W: Final = 48
@@ -1801,8 +1926,10 @@ class TypeSurvivorsApp(App[None]):
         arena = self._live_arena()
         state = arena.arena_state
         accuracy = tally_accuracy(arena.tally)
+        trail = arena.wpm_trail
         card = render_report(
             RunSummary(
+                wpm_samples=trail,
                 accuracy=accuracy,
                 kills=state.kills,
                 wave=state.wave,
@@ -1817,6 +1944,11 @@ class TypeSurvivorsApp(App[None]):
             wave=state.wave,
             card=card,
             app=self,
+            wpm=trail,
+            net=net_wpm(arena.hits, Seconds(arena.clock)),
+            accuracy=accuracy,
+            consistency=consistency(trail).value,
+            best_streak=arena.best_streak,
         )
 
     def open_shop(self) -> None:
@@ -1844,6 +1976,15 @@ class TypeSurvivorsApp(App[None]):
             _ = self.pop_screen()
         if not isinstance(self.screen, ArenaScreen):
             self.start_run()
+
+    def retry_run(self) -> None:
+        """Drop the recap and its dead arena, then deal a fresh run."""
+        while len(self.screen_stack) > 1 and isinstance(
+            self.screen,
+            (ReportScreen, ArenaScreen),
+        ):
+            _ = self.pop_screen()
+        self.start_run()
 
     def suspend_to_hub(self) -> None:
         """Drop screens down to the hub, pushing one when none is below."""
