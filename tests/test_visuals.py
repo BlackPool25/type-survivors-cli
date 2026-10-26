@@ -53,6 +53,7 @@ _BOSS_GAP_TICK: Final = 3.5
 _BANNER_ROWS: Final = 3
 _CORE_PLUS_TWO: Final = 3
 _CORE_PLUS_ONE: Final = 2
+_CORE_PLUS_FOES: Final = 9
 _NARROW_WIDTH: Final = 80
 _FIELD_ROWS_MIN: Final = 6
 """Foe field keeps at least two rows visible at the smallest viewport."""
@@ -202,6 +203,24 @@ def test_pilot_arena_mounts_sprite_widgets_for_foes(
             shown = [w for w in screen.query(TerminalImage) if w.display]
             assert len(shown) == _CORE_PLUS_TWO
             assert all(widget.image is not None for widget in shown)
+
+    asyncio.run(_scenario())
+
+
+def test_pilot_sixel_mounts_sprite_widgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PAR_TERM_GRAPHICS=sixel mounts PNG sprites like kitty does."""
+
+    async def _scenario() -> None:
+        monkeypatch.delenv("TSURV_TRUEPIXEL", raising=False)
+        monkeypatch.setenv("PAR_TERM_GRAPHICS", "sixel")
+        app = TypeSurvivorsApp(initial_words=("cat", "dog"), spawn_enabled=False)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            assert len(screen.query(TerminalImage)) == _CORE_PLUS_FOES
 
     asyncio.run(_scenario())
 

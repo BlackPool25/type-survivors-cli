@@ -103,7 +103,6 @@ from tsurv.stage import (
     CORE_ART_HIT,
     ArenaCanvas,
     FieldSprite,
-    RendererKind,
     RendererPick,
     art_origin,
     canvas_xy,
@@ -715,13 +714,13 @@ class ArenaScreen(Screen[None]):
     @override
     def compose(self) -> ComposeResult:
         """Header, true-2D stage, boss bars, fx, diagnostics, typing, flags."""
-        kitty = self._pick.kind is RendererKind.KITTY
+        true_pixel = self._pick.kind.true_pixel
         yield Label("", id="topbar")
         yield Label("", id="bossbanner")
         with Vertical(id="arena"):
             with Vertical(id="stage"):
                 yield ArenaCanvas(widget_id="field")
-                if kitty:
+                if true_pixel:
                     yield TerminalImage(id="core-sprite")
                     for index in range(MAX_FOES):
                         yield TerminalImage(
@@ -741,10 +740,10 @@ class ArenaScreen(Screen[None]):
         yield Label("", id="death")
 
     def on_mount(self) -> None:
-        """First paint, explicit kitty pin, viewport guard, then 60fps tick."""
-        if self._pick.kind is RendererKind.KITTY:
+        """First paint, explicit protocol pin, viewport guard, then 60fps tick."""
+        if self._pick.kind.true_pixel:
             for widget in self.query(TerminalImage):
-                widget.force_protocol("kitty")
+                widget.force_protocol(self._pick.kind.value)  # type: ignore[arg-type]
         self._audio_player = find_player() if default_enabled() else None
         self._stop_ambient = start_ambient(
             self._audio_player,
@@ -1479,11 +1478,11 @@ class ArenaScreen(Screen[None]):
         shake: int,
         hit: bool,
     ) -> None:
-        """Paint the true-2D stage: kitty PNGs or the cells canvas.
+        """Paint the true-2D stage: true-pixel PNGs or the cells canvas.
 
         Core sits dead-center (stepping forward on wave clear); foes ring it
-        by sim angle and distance across the whole field. Hidden kitty slots
-        release their textures so pooled slots never hold stale sprites.
+        by sim angle and distance across the whole field. Hidden true-pixel
+        slots release their textures so pooled slots never hold stale sprites.
         """
         foes = self._arena.enemies
         live = {foe.id for foe in foes}
@@ -1546,7 +1545,7 @@ class ArenaScreen(Screen[None]):
             for decal in self._blood_decals
             if 0 <= decal.x < width and 0 <= decal.y < height
         )
-        if self._pick.kind is RendererKind.KITTY:
+        if self._pick.kind.true_pixel:
             self.query_one("#field", ArenaCanvas).set_field(
                 render_field(width=width, height=height, sprites=tuple(sprites)),
             )
