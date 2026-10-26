@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, ClassVar, Final, assert_never
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from tsurv.arena import ArenaState, Score, advance, initial_arena
-from tsurv.profile import Palette, Profile
+from tsurv.items import ItemKind
+from tsurv.profile import Palette, Profile, atomic_write_text
 from tsurv.words import Corruption
 
 if TYPE_CHECKING:
@@ -40,12 +41,14 @@ _GLITCH_RANK: Final = 3
 
 @dataclass(frozen=True, slots=True)
 class ShopItem:
-    """One permanent starting perk: run gold buys it once, forever."""
+    """One meta-shop line: one-time caches or capped escalating ranks."""
 
     id: str
     name: str
     price: int
     blurb: str
+    max_rank: int = 1
+    price_step: int = 0
 
 
 SHOP_CATALOG: Final[tuple[ShopItem, ...]] = (
@@ -67,7 +70,61 @@ SHOP_CATALOG: Final[tuple[ShopItem, ...]] = (
         price=200,
         blurb="begin every run holding a revive",
     ),
+    ShopItem(
+        id="vitality",
+        name="Vitality Mesh",
+        price=100,
+        blurb="+10 max hull per rank",
+        max_rank=5,
+        price_step=100,
+    ),
+    ShopItem(
+        id="focus",
+        name="Focus Lattice",
+        price=150,
+        blurb="shorter typo stuns per rank",
+        max_rank=4,
+        price_step=150,
+    ),
+    ShopItem(
+        id="deep-chill",
+        name="Deep Chill",
+        price=120,
+        blurb="+1s frost veil per rank",
+        max_rank=3,
+        price_step=140,
+    ),
+    ShopItem(
+        id="greed",
+        name="Greed Sigil",
+        price=200,
+        blurb="+1 gold per kill per rank",
+        max_rank=3,
+        price_step=200,
+    ),
 )
+
+CACHE_ITEMS: Final[tuple[str, ...]] = ("blood-vial", "frost-veil", "second-wind")
+"""One-time shop lines that grant a held starting item each run."""
+
+CACHE_TO_KIND: Final[dict[str, ItemKind]] = {
+    "blood-vial": ItemKind.BLOOD_VIAL,
+    "frost-veil": ItemKind.FROST_VEIL,
+    "second-wind": ItemKind.SECOND_WIND,
+}
+"""Cache line id to the held item it grants at run start."""
+
+VITALITY_HP_PER_RANK: Final = 10
+"""Max hull gained per vitality rank (100 -> 150 at cap)."""
+
+FOCUS_STUN_RELIEF_PER_RANK: Final = 0.05
+"""Typo-stun seconds shaved per focus rank (0.6s -> 0.4s at cap)."""
+
+DEEP_CHILL_SECONDS_PER_RANK: Final = 1.0
+"""Frost-veil seconds gained per deep-chill rank (+3s at cap)."""
+
+GREED_GOLD_PER_RANK: Final = 1
+"""Extra gold per kill per greed rank (5 -> 8 at cap)."""
 
 
 class ShopError(ValueError):
@@ -146,35 +203,71 @@ def shop_lookup(item_id: str) -> ShopItem:
     raise ShopError(msg)
 
 
-def buy_item(profile: Profile, item_id: str) -> Profile:
-    """Spend run gold on a permanent perk (once each, wallet must cover)."""
-    item = shop_lookup(item_id)
-    if item.id in profile.shop:
-        msg = f"shop item already owned: {item_id!r}"
+def shop_rank(profile: Profile, item_id: str) -> int:
+    """Owned rank of one shop line (0 when never bought)."""
+    return profile.shop.get(item_id, 0)
+
+
+def price_for(item: ShopItem, owned_rank: int) -> int:
+    """Next-rank price: base plus one step per rank already owned."""
+    if owned_rank < 0:
+        msg = f"owned rank must be >= 0, got {owned_rank}"
         raise ShopError(msg)
-    if profile.gold < item.price:
-        msg = (
-            f"cannot afford {item_id!r}: costs {item.price}, wallet has {profile.gold}"
-        )
+    return item.price + item.price_step * owned_rank
+
+
+def buy_item(profile: Profile, item_id: str) -> Profile:
+    """Spend run gold on the next rank (capped, wallet must cover)."""
+    item = shop_lookup(item_id)
+    rank = shop_rank(profile, item_id)
+    if rank >= item.max_rank:
+        msg = f"shop item maxed out: {item_id!r}"
+        raise ShopError(msg)
+    price = price_for(item, rank)
+    if profile.gold < price:
+        msg = f"cannot afford {item_id!r}: costs {price}, wallet has {profile.gold}"
         raise ShopError(msg)
     return profile.model_copy(
-        update={"gold": profile.gold - item.price, "shop": (*profile.shop, item.id)},
+        update={
+            "gold": profile.gold - price,
+            "shop": {**profile.shop, item.id: rank + 1},
+        },
     )
 
 
-def bank_gold(profile: Profile, kills: int, waves: int) -> Profile:
-    """Bank run earnings at the pinned per-kill and per-wave rates."""
+def refund_all(profile: Profile) -> tuple[Profile, int]:
+    """Full refund (VS-style): clear every rank, pay back exact spend."""
+    total = 0
+    for item in SHOP_CATALOG:
+        rank = shop_rank(profile, item.id)
+        total += sum(price_for(item, owned) for owned in range(rank))
+    cleared = profile.model_copy(update={"gold": profile.gold + total, "shop": {}})
+    return cleared, total
+
+
+def bank_gold(
+    profile: Profile,
+    kills: int,
+    waves: int,
+    *,
+    gold_per_kill: int = GOLD_PER_KILL,
+) -> Profile:
+    """Bank run earnings at the per-kill rate (greed raises it)."""
     if kills < 0 or waves < 0:
         msg = f"cannot bank negative earnings: kills={kills} waves={waves}"
         raise ShopError(msg)
     return profile.model_copy(
-        update={"gold": profile.gold + kills * GOLD_PER_KILL + waves * GOLD_PER_WAVE},
+        update={"gold": profile.gold + kills * gold_per_kill + waves * GOLD_PER_WAVE},
     )
 
 
 def starting_perks(profile: Profile) -> tuple[str, ...]:
-    """Owned perk ids: every run starts holding each of these."""
-    return profile.shop
+    """Owned cache ids in catalog order: every run starts holding each."""
+    return tuple(
+        item.id
+        for item in SHOP_CATALOG
+        if item.id in CACHE_ITEMS and item.id in profile.shop
+    )
 
 
 def update_settings(
@@ -267,15 +360,24 @@ def restore(checkpoint: Checkpoint) -> ArenaState:
 
 
 def save_checkpoint(directory: Path, checkpoint: Checkpoint) -> None:
-    """Atomically write the suspend file so a crash never corrupts it."""
+    """Durably write the suspend file so a crash never corrupts it."""
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / CHECKPOINT_FILENAME
-    tmp = path.with_name(f"{CHECKPOINT_FILENAME}.tmp")
     try:
-        _ = tmp.write_text(checkpoint.model_dump_json(), encoding="utf-8")
-        _ = tmp.replace(path)
+        atomic_write_text(
+            directory / CHECKPOINT_FILENAME,
+            checkpoint.model_dump_json(),
+        )
     except OSError as exc:
-        msg = f"cannot save checkpoint to {path}: {exc}"
+        msg = f"cannot save checkpoint to {directory / CHECKPOINT_FILENAME}: {exc}"
+        raise CheckpointError(msg) from exc
+
+
+def clear_checkpoint(directory: Path) -> None:
+    """Unlink the suspend file at run end; missing is a no-op (idempotent)."""
+    try:
+        _ = (directory / CHECKPOINT_FILENAME).unlink(missing_ok=True)
+    except OSError as exc:
+        msg = f"cannot clear checkpoint in {directory}: {exc}"
         raise CheckpointError(msg) from exc
 
 

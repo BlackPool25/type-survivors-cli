@@ -160,12 +160,15 @@ def apply_keystroke(  # noqa: PLR0913, PLR0917 - seven explicit params per rulin
     streak: int,
     now: float,
     stunned_until: float = 0.0,
+    *,
+    stun_duration: float = STUN_DURATION,
 ) -> Keystroke:
     """Resolve one keypress in order: stun gate, Esc, lock, advance/kill/typo.
 
     Progress rides on `typed` (the locked word's matched prefix length);
     completing a word is always a Kill, and a miss on the locked word
     retargets to a prefix-sharing enemy before counting as a typo.
+    Focus ranks shrink the jam window through `stun_duration`.
     """
     if now < stunned_until:
         return TypoStun(stun_until=stunned_until, streak=0)
@@ -195,7 +198,7 @@ def apply_keystroke(  # noqa: PLR0913, PLR0917 - seven explicit params per rulin
             if alts:
                 outcome = _advance(_nearest(alts), typed + 1, streak, now)
             else:
-                outcome = TypoStun(stun_until=now + STUN_DURATION, streak=0)
+                outcome = TypoStun(stun_until=now + stun_duration, streak=0)
     return outcome
 
 

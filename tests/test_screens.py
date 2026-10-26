@@ -31,27 +31,33 @@ from tsurv.arena import (
     spawn_enemy,
 )
 from tsurv.grammar import GrammarError, generate_boss_sentence
-from tsurv.profile import Palette, Profile, Settings
+from tsurv.items import ItemKind
+from tsurv.profile import PROFILE_FILENAME, Palette, Profile, Settings, load_profile
 from tsurv.screens import (
     CHECKPOINT_FILENAME,
     GOLD_PER_KILL,
     GOLD_PER_WAVE,
     HELP_TEXT,
     SHOP_CATALOG,
+    VITALITY_HP_PER_RANK,
     CheckpointError,
     ShellCommand,
     ShopError,
     bank_gold,
     buy_item,
+    clear_checkpoint,
     corruption_for_rank,
     describe,
     load_checkpoint,
     next_palette,
     parse_command,
     practice_advance,
+    price_for,
+    refund_all,
     restore,
     save_checkpoint,
     shop_lookup,
+    shop_rank,
     snapshot,
     starting_perks,
     update_settings,
@@ -71,10 +77,16 @@ if TYPE_CHECKING:
 
 _RICH: Final = 250
 """Gold wallet that affords any single catalog item."""
+_FAT_WALLET: Final = 10_000
+"""Gold wallet that affords a full rank ladder in one test."""
+_CAPPED_WALLET: Final = 100_000
+"""Gold wallet that maxes any single rank line in one test."""
 _WAVE_SEVEN: Final = 7
 """Checkpoint wave used by the suspend/resume round-trip."""
-_CATALOG_COUNT: Final = 3
-"""Permanent starting perks in the meta shop."""
+_WAVE_TWO: Final = 2
+"""Second snapshot wave used by the checkpoint backup test."""
+_CATALOG_COUNT: Final = 7
+"""Three one-time caches plus four capped rank lines in the meta shop."""
 _SNAP_SCORE: Final = 500
 """Score frozen by the checkpoint snapshot test."""
 _SNAP_KILLS: Final = 9
@@ -93,12 +105,78 @@ def _word(text: str) -> Word:
 
 
 def test_shop_catalog_prices_from_source() -> None:
-    """Three permanent starting perks with positive distinct prices."""
+    """Seven shop lines, all positive prices, caches one-time."""
     assert len(SHOP_CATALOG) == _CATALOG_COUNT
-    prices = [item.price for item in SHOP_CATALOG]
-    assert all(price > 0 for price in prices)
-    assert len(set(prices)) == len(prices)
+    assert all(item.price > 0 for item in SHOP_CATALOG)
+    assert all(item.max_rank >= 1 for item in SHOP_CATALOG)
     assert shop_lookup(SHOP_CATALOG[0].id) == SHOP_CATALOG[0]
+
+
+def test_ranked_line_price_escalates_per_owned_rank() -> None:
+    """Repeatable lines cost base + step per owned rank (VS-style legs)."""
+    vitality = shop_lookup("vitality")
+    assert vitality.max_rank > 1
+    assert price_for(vitality, 0) == vitality.price
+    assert price_for(vitality, 1) == vitality.price + vitality.price_step
+    assert price_for(vitality, 2) == vitality.price + 2 * vitality.price_step
+
+
+def test_buy_item_ranks_up_repeatable_lines() -> None:
+    """Second purchase of a line charges the escalated price, rank grows."""
+    vitality = shop_lookup("vitality")
+    first = buy_item(Profile(gold=_FAT_WALLET), "vitality")
+    assert shop_rank(first, "vitality") == 1
+    second = buy_item(first, "vitality")
+    assert shop_rank(second, "vitality") == shop_rank(first, "vitality") + 1
+    assert second.gold == _FAT_WALLET - price_for(vitality, 0) - price_for(vitality, 1)
+
+
+def test_buy_item_rejects_capped_rank() -> None:
+    """Buying past max_rank raises even with a full wallet."""
+    vitality = shop_lookup("vitality")
+    profile = Profile(gold=_CAPPED_WALLET)
+    for _ in range(vitality.max_rank):
+        profile = buy_item(profile, "vitality")
+    with pytest.raises(ShopError):
+        _ = buy_item(profile, "vitality")
+
+
+def test_refund_all_returns_spend_and_clears_shop() -> None:
+    """Full refund (VS-style) pays back every rank bought, shop empties."""
+    vitality = shop_lookup("vitality")
+    profile = buy_item(Profile(gold=_FAT_WALLET), "vitality")
+    profile = buy_item(profile, "blood-vial")
+    refunded, amount = refund_all(profile)
+    assert refunded.shop == {}
+    assert amount == price_for(vitality, 0) + shop_lookup("blood-vial").price
+    assert refunded.gold == _FAT_WALLET
+
+
+def test_bank_gold_honors_greed_rate() -> None:
+    """Greed ranks raise the per-kill payout through the rate parameter."""
+    profile = bank_gold(Profile(), kills=2, waves=0, gold_per_kill=GOLD_PER_KILL + 3)
+    assert profile.gold == 2 * (GOLD_PER_KILL + 3)
+
+
+def test_clear_checkpoint_removes_file_and_tolerates_missing(
+    tmp_path: Path,
+) -> None:
+    """Run end unlinks the suspend file; double-clear is a no-op."""
+    state = replace(initial_arena(), wave=_WAVE_SEVEN)
+    save_checkpoint(tmp_path, snapshot(state))
+    assert (tmp_path / CHECKPOINT_FILENAME).is_file()
+    clear_checkpoint(tmp_path)
+    assert not (tmp_path / CHECKPOINT_FILENAME).exists()
+    clear_checkpoint(tmp_path)
+
+
+def test_checkpoint_save_keeps_previous_backup(tmp_path: Path) -> None:
+    """The second suspend preserves the first snapshot in .bak."""
+    save_checkpoint(tmp_path, snapshot(replace(initial_arena(), wave=1)))
+    save_checkpoint(tmp_path, snapshot(replace(initial_arena(), wave=_WAVE_TWO)))
+    assert load_checkpoint(tmp_path).wave == _WAVE_TWO
+    backup_raw = (tmp_path / f"{CHECKPOINT_FILENAME}.bak").read_text(encoding="utf-8")
+    assert '"wave":1' in backup_raw.replace(" ", "")
 
 
 def test_buy_item_deducts_and_unlocks() -> None:
@@ -234,7 +312,7 @@ def test_weak_key_words_weighted_more_never_exclusive() -> None:
 
 
 def test_pilot_death_recap_shop_restart() -> None:
-    """Death → R recap → S shop → buy key restarts on the arena in 3."""
+    """Death → R recap → S shop → buy key stays; Q pops back to recap."""
 
     async def _scenario() -> None:
         app = TypeSurvivorsApp(
@@ -258,9 +336,12 @@ def test_pilot_death_recap_shop_restart() -> None:
             assert isinstance(app.screen, ShopScreen)
             await pilot.press("1")
             await pilot.pause()
-            assert isinstance(app.screen, ArenaScreen)
+            assert isinstance(app.screen, ShopScreen)
             assert SHOP_CATALOG[0].id in app.profile.shop
             assert app.profile.gold == _RICH - SHOP_CATALOG[0].price
+            await pilot.press("q")
+            await pilot.pause()
+            assert isinstance(app.screen, ReportScreen)
 
     asyncio.run(_scenario())
 
@@ -363,8 +444,8 @@ def test_boss_word_text_falls_back_to_t3(
     assert all(chunk in pool for chunk in chunks)
 
 
-def test_pilot_hub_shop_buy_returns_to_arena() -> None:
-    """Hub → H shop → buy key purchases and restarts on the arena."""
+def test_pilot_hub_shop_buy_stays_in_market() -> None:
+    """Hub → H shop → buy key stays; Q pops back to the hub."""
 
     async def _scenario() -> None:
         app = TypeSurvivorsApp(
@@ -380,9 +461,12 @@ def test_pilot_hub_shop_buy_returns_to_arena() -> None:
             assert isinstance(app.screen, ShopScreen)
             await pilot.press("1")
             await pilot.pause()
-            assert isinstance(app.screen, ArenaScreen)
+            assert isinstance(app.screen, ShopScreen)
             assert SHOP_CATALOG[0].id in app.profile.shop
             assert app.profile.gold == _RICH - SHOP_CATALOG[0].price
+            await pilot.press("q")
+            await pilot.pause()
+            assert isinstance(app.screen, HubScreen)
 
     asyncio.run(_scenario())
 
@@ -489,5 +573,147 @@ def test_pilot_suspend_saves_and_resume_restores_wave(tmp_path: Path) -> None:
             assert screen.arena_state.wave == _WAVE_SEVEN
             assert int(screen.arena_state.score) == _SNAP_SCORE
             assert screen.arena_state.kills == _SNAP_KILLS
+
+    asyncio.run(_scenario())
+
+
+def test_apply_profile_saves_through(tmp_path: Path) -> None:
+    """Shop/settings writes persist to disk when a profile dir is set."""
+    app = TypeSurvivorsApp(profile_dir=tmp_path)
+    app.apply_profile(Profile(gold=_RICH))
+    assert load_profile(tmp_path).gold == _RICH
+
+
+def test_apply_profile_no_save_skips_disk(tmp_path: Path) -> None:
+    """Per-keystroke folds stay in memory; the run end flushes them."""
+    app = TypeSurvivorsApp(profile_dir=tmp_path)
+    app.apply_profile(Profile(gold=_RICH), save=False)
+    assert not (tmp_path / PROFILE_FILENAME).exists()
+
+
+def test_note_keystroke_folds_per_key_stats(tmp_path: Path) -> None:
+    """One typed char updates presses without touching the disk."""
+    app = TypeSurvivorsApp(profile_dir=tmp_path)
+    app.note_keystroke("a", 0.1, correct=True)
+    assert app.profile.per_key["a"].presses == 1
+    assert not (tmp_path / PROFILE_FILENAME).exists()
+
+
+def test_pilot_build_arena_wires_shop_ranks() -> None:
+    """Vitality raises max HP and caches ride along as held items."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(
+            initial_words=(),
+            spawn_enabled=False,
+            profile=Profile(shop={"vitality": 2, "blood-vial": 1}),
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            arena = app.screen
+            assert isinstance(arena, ArenaScreen)
+            assert arena.arena_state.max_hp == 100.0 + 2 * VITALITY_HP_PER_RANK
+            assert arena.arena_state.hp == arena.arena_state.max_hp
+            assert arena.arena_state.held == (ItemKind.BLOOD_VIAL,)
+
+    asyncio.run(_scenario())
+
+
+def test_pilot_death_tick_banks_and_clears(tmp_path: Path) -> None:
+    """Lethal leak banks earnings, appends history, clears the checkpoint."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(
+            initial_words=(),
+            spawn_enabled=False,
+            profile_dir=tmp_path,
+        )
+        save_checkpoint(tmp_path, snapshot(initial_arena()))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            arena = app.screen
+            assert isinstance(arena, ArenaScreen)
+            arena.set_restored(replace(arena.arena_state, kills=2, wave=3, hp=5.0))
+            arena.spawn_test_enemy("zz", distance=0.05)
+            arena.tick(5.0)
+            await pilot.pause()
+            expected = 2 * GOLD_PER_KILL + 2 * GOLD_PER_WAVE
+            assert app.profile.gold == expected
+            assert len(app.profile.runs) == 1
+            assert not (tmp_path / CHECKPOINT_FILENAME).exists()
+            assert load_profile(tmp_path).gold == expected
+            arena.tick(5.0)
+            assert app.profile.gold == expected
+
+    asyncio.run(_scenario())
+
+
+def test_pilot_quit_banks_partial_run(tmp_path: Path) -> None:
+    """P -> Q mid-run banks partial earnings before the app exits."""
+
+    async def _scenario() -> None:
+        app = TypeSurvivorsApp(
+            initial_words=(),
+            spawn_enabled=False,
+            profile_dir=tmp_path,
+        )
+        async with app.run_test() as pilot:
+            screen = app.screen
+            assert isinstance(screen, ArenaScreen)
+            screen.spawn_test_enemy("zz", distance=5.0)
+            await pilot.press("z")
+            await pilot.press("z")
+            await pilot.pause()
+            assert screen.arena_state.kills == 1
+            await pilot.press("P")
+            await pilot.pause()
+            assert screen.paused is True
+            await pilot.press("q")
+            await pilot.pause()
+        assert app.profile.gold == GOLD_PER_KILL
+        assert len(app.profile.runs) == 1
+        assert load_profile(tmp_path).gold == GOLD_PER_KILL
+
+    asyncio.run(_scenario())
+
+
+def test_pilot_shop_ranks_and_refund(tmp_path: Path) -> None:
+    """Buys raise ranks in place; key 0 refunds every line in full."""
+
+    async def _scenario() -> None:
+        wallet = 1000
+        app = TypeSurvivorsApp(
+            initial_words=(),
+            spawn_enabled=False,
+            profile=Profile(gold=wallet),
+            profile_dir=tmp_path,
+            start_at_hub=True,
+        )
+        async with app.run_test() as pilot:
+            assert isinstance(app.screen, HubScreen)
+            await pilot.press("h")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ShopScreen)
+            await pilot.press("4")
+            await pilot.pause()
+            assert isinstance(app.screen, ShopScreen)
+            assert app.profile.shop == {"vitality": 1}
+            first = SHOP_CATALOG[3].price
+            assert app.profile.gold == wallet - first
+            await pilot.press("4")
+            await pilot.pause()
+            assert app.profile.shop == {"vitality": 2}
+            assert app.profile.gold == wallet - first - price_for(
+                SHOP_CATALOG[3],
+                1,
+            )
+            await pilot.press("0")
+            await pilot.pause()
+            assert app.profile.shop == {}
+            assert app.profile.gold == wallet
+            await pilot.press("q")
+            await pilot.pause()
+            assert isinstance(app.screen, HubScreen)
 
     asyncio.run(_scenario())

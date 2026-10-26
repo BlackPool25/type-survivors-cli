@@ -8,6 +8,7 @@ from math import cos, pi, sin
 from typing import Final, NewType, assert_never
 
 from tsurv.combat import (
+    STUN_DURATION,
     Advanced,
     EnemyId,
     EnemyState,
@@ -55,6 +56,9 @@ MERCY_SPAWN_SLOWDOWN: Final = 1.5
 
 ELITE_DROP_RATE: Final = 0.10
 """Elite Chain Spark drop chance per kill (~10%)."""
+
+HELD_MAX: Final = 3
+"""Held item slots: the three shop caches ride here until hotkeyed."""
 
 MAX_SIMULTANEOUS: Final = 8
 """Field cap: one wave never deals more foes than the viewport holds."""
@@ -210,19 +214,25 @@ class ArenaState:
     next_id: int = 0
     boss_wave: bool = False
     mercy: MercyState = MercyState()
+    held: tuple[ItemKind, ...] = ()
 
 
-def initial_arena(
+def initial_arena(  # noqa: PLR0913 - six explicit params per ruling
     hp: float = 100.0,
     streak: int = 0,
     shield_until: float = 0.0,
     frost_until: float = 0.0,
+    max_hp: float = 100.0,
     *,
     boss_wave: bool = False,
 ) -> ArenaState:
-    """Build an empty arena at full health with the given streak/windows."""
+    """Build an empty arena at full health with the given streak/windows.
+
+    Vitality ranks raise the hull ceiling through `max_hp`.
+    """
     return ArenaState(
         hp=hp,
+        max_hp=max_hp,
         streak=streak,
         shield_until=shield_until,
         frost_until=frost_until,
@@ -281,13 +291,14 @@ def spawn_wave(
     )
 
 
-def handle_keystroke(
+def handle_keystroke(  # noqa: PLR0913 - six explicit params per ruling
     state: ArenaState,
     ch: str,
     now: float,
     *,
     accuracy: float = 1.0,
     consistency: float | None = None,
+    stun_duration: float = STUN_DURATION,
 ) -> tuple[ArenaState, Keystroke]:
     """Resolve one keypress: advance/kill via combat, score, streak, shields.
 
@@ -305,6 +316,7 @@ def handle_keystroke(
         state.streak,
         now,
         state.stunned_until,
+        stun_duration=stun_duration,
     )
     match outcome:
         case Advanced(target=target, typed=typed):
@@ -392,7 +404,13 @@ def merge_window(live: float, gained: float) -> float:
     return max(live, gained)
 
 
-def apply_pickup(state: ArenaState, item: ItemKind, now: float) -> ArenaState:
+def apply_pickup(
+    state: ArenaState,
+    item: ItemKind,
+    now: float,
+    *,
+    veil_bonus: float = 0.0,
+) -> ArenaState:
     """Apply one typed item grab, max()-merging nonzero effect windows."""
     result: TriggerResult = trigger(
         item,
@@ -400,6 +418,7 @@ def apply_pickup(state: ArenaState, item: ItemKind, now: float) -> ArenaState:
         state.max_hp,
         state.revives_used,
         now,
+        veil_bonus=veil_bonus,
     )
     return replace(
         state,
@@ -407,6 +426,42 @@ def apply_pickup(state: ArenaState, item: ItemKind, now: float) -> ArenaState:
         revives_used=result.revives_used,
         frost_until=merge_window(state.frost_until, result.frost_until),
         shield_until=merge_window(state.shield_until, result.shield_until),
+    )
+
+
+def stow_item(state: ArenaState, item: ItemKind, now: float) -> ArenaState:
+    """Hold one starting item; a full rack auto-applies instead of wasting."""
+    if len(state.held) >= HELD_MAX:
+        return apply_pickup(state, item, now)
+    return replace(state, held=(*state.held, item))
+
+
+def use_held(
+    state: ArenaState,
+    index: int,
+    now: float,
+    *,
+    veil_bonus: float = 0.0,
+) -> ArenaState:
+    """Trigger one held item by slot, ejecting it from the rack."""
+    if not 0 <= index < len(state.held):
+        msg = f"held slot out of range: {index}"
+        raise ValueError(msg)
+    result = trigger(
+        state.held[index],
+        state.hp,
+        state.max_hp,
+        state.revives_used,
+        now,
+        veil_bonus=veil_bonus,
+    )
+    return replace(
+        state,
+        hp=result.hp,
+        revives_used=result.revives_used,
+        frost_until=merge_window(state.frost_until, result.frost_until),
+        shield_until=merge_window(state.shield_until, result.shield_until),
+        held=(*state.held[:index], *state.held[index + 1 :]),
     )
 
 

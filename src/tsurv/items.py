@@ -74,18 +74,21 @@ def _check_vitals(hp: float, max_hp: float, revives_used: int, now: float) -> No
         raise ItemError(msg)
 
 
-def trigger(
+def trigger(  # noqa: PLR0913 - six explicit params per ruling
     item: ItemKind,
     hp: float,
     max_hp: float,
     revives_used: int,
     now: float,
+    *,
+    veil_bonus: float = 0.0,
 ) -> TriggerResult:
     """Resolve one typed item grab against narrow vitals (exhaustive over ItemKind).
 
-    Blood Vial heals 30 capped at max; Frost Veil opens a 5s slow window;
-    Second Wind revives lethal damage once at half max; Chain Spark only
-    marks consumed (the arena resolves the 3-kill arc in Task 5).
+    Blood Vial heals 30 capped at max; Frost Veil opens a 5s slow window
+    plus deep-chill bonus seconds; Second Wind revives lethal damage once
+    at half max; Chain Spark only marks consumed (the arena resolves the
+    3-kill arc in Task 5).
     """
     _check_vitals(hp, max_hp, revives_used, now)
     match item:
@@ -116,7 +119,7 @@ def trigger(
         case ItemKind.FROST_VEIL:
             return TriggerResult(
                 hp=hp,
-                frost_until=now + FROST_VEIL_DURATION,
+                frost_until=now + FROST_VEIL_DURATION + veil_bonus,
                 shield_until=0.0,
                 revives_used=revives_used,
                 consumed=True,

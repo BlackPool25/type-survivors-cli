@@ -41,6 +41,8 @@ from tsurv.arena import (
     spawn_enemy,
     spawn_radius_for_level,
     spawn_wave,
+    stow_item,
+    use_held,
     world_xy,
 )
 from tsurv.audio import (
@@ -53,9 +55,18 @@ from tsurv.audio import (
     play_music_track,
     stop_music_track,
 )
-from tsurv.combat import Advanced, EnemyId, Kill, TypoStun, rolling_wpm, spawn_interval
+from tsurv.combat import (
+    STUN_DURATION,
+    Advanced,
+    EnemyId,
+    Kill,
+    NoTarget,
+    TypoStun,
+    rolling_wpm,
+    spawn_interval,
+)
 from tsurv.grammar import GrammarError, generate_boss_sentence
-from tsurv.items import nova_charge, nova_ready
+from tsurv.items import ItemKind, nova_charge, nova_ready
 from tsurv.juice import (
     JuiceState,
     apply_calibration,
@@ -79,20 +90,42 @@ from tsurv.metrics import (
     tally_accuracy,
     tally_of,
 )
-from tsurv.profile import Profile, RunSummary, Settings, weak_keys_for_spawn
+from tsurv.profile import (
+    Profile,
+    ProfileError,
+    RunSummary,
+    Settings,
+    load_profile,
+    record_keystroke,
+    save_profile,
+    weak_keys_for_spawn,
+)
 from tsurv.report import render_report
 from tsurv.screens import (
+    CACHE_TO_KIND,
+    DEEP_CHILL_SECONDS_PER_RANK,
+    FOCUS_STUN_RELIEF_PER_RANK,
+    GOLD_PER_KILL,
+    GREED_GOLD_PER_RANK,
     HELP_TEXT,
     SHOP_CATALOG,
+    VITALITY_HP_PER_RANK,
     CheckpointError,
     ShopError,
+    ShopItem,
+    bank_gold,
     buy_item,
+    clear_checkpoint,
     load_checkpoint,
     next_palette,
     practice_advance,
+    price_for,
+    refund_all,
     restore,
     save_checkpoint,
+    shop_rank,
     snapshot,
+    starting_perks,
     update_settings,
 )
 from tsurv.stage import (
@@ -247,6 +280,8 @@ _WPM_PER_PRESS_SECOND: Final = 12.0
 """Raw WPM sustained by one press in a second (chars/5 per minute)."""
 
 _START_HP: Final = 100.0
+_MIN_STUN_S: Final = 0.1
+_RUN_HISTORY_CAP: Final = 50
 
 _BOSS_GENERATION_ATTEMPTS: Final = 2
 """Grammar tries per boss spawn before falling back to the T3 word list."""
@@ -469,7 +504,7 @@ class ArenaScreen(Screen[None]):
         "#death { height: 2; color: #FF2A2A; text-style: bold; }\n"
     )
 
-    def __init__(  # noqa: PLR0913 - arena config is one flat tested surface
+    def __init__(  # noqa: PLR0913, PLR0915 - arena config is one flat tested surface
         self,
         initial_words: tuple[str, ...] = ("cat",),
         initial_boss: str | None = None,
@@ -480,6 +515,10 @@ class ArenaScreen(Screen[None]):
         seed: int | None = None,
         practice: bool = False,
         checkpoint_dir: Path | None = None,
+        held: tuple[ItemKind, ...] = (),
+        max_hp_bonus: float = 0.0,
+        stun_duration: float = STUN_DURATION,
+        veil_bonus: float = 0.0,
     ) -> None:
         """Seed the arena; tests inject words and disable the spawner."""
         super().__init__()
@@ -489,6 +528,15 @@ class ArenaScreen(Screen[None]):
         self._juice: JuiceState = JuiceState()
         self._boss_banner_until: float = 0.0
         state = initial_arena(hp=_START_HP)
+        if max_hp_bonus:
+            state = replace(
+                state,
+                hp=_START_HP + max_hp_bonus,
+                max_hp=_START_HP + max_hp_bonus,
+            )
+        stowed_at = time.monotonic()
+        for kind in held:
+            state = stow_item(state, kind, stowed_at)
         for text in initial_words:
             state = spawn_enemy(
                 state,
@@ -517,6 +565,9 @@ class ArenaScreen(Screen[None]):
         self.paused: bool = False
         self._practice: bool = practice
         self._checkpoint_dir: Path | None = checkpoint_dir
+        self._stun_duration: float = stun_duration
+        self._veil_bonus: float = veil_bonus
+        self._banked: bool = False
         self._run_clock: float = 0.0
         self.mono: bool = not colors_enabled()
         self._clock: float = 0.0
@@ -549,6 +600,20 @@ class ArenaScreen(Screen[None]):
     def arena_state(self) -> ArenaState:
         """Current pure arena state (tests read score/foes through this)."""
         return self._arena
+
+    @property
+    def is_practice(self) -> bool:
+        """Practice runs never touch gold, history, or the checkpoint."""
+        return self._practice
+
+    @property
+    def run_banked(self) -> bool:
+        """Whether this run's earnings already landed in the profile."""
+        return self._banked
+
+    def mark_banked(self) -> None:
+        """Record that earnings landed, so death and quit cannot double-bank."""
+        self._banked = True
 
     @property
     def advance_active(self) -> bool:
@@ -706,6 +771,7 @@ class ArenaScreen(Screen[None]):
     def set_restored(self, state: ArenaState) -> None:
         """Replace the live arena with a checkpoint-restored snapshot."""
         self._arena = state
+        self._banked = state.hp <= 0.0
 
     @override
     def compose(self) -> ComposeResult:
@@ -892,8 +958,10 @@ class ArenaScreen(Screen[None]):
             names = {foe.id: str(foe.word.text) for foe in before_leak.enemies}
             self._killer = names[leaked[0]]
             self._tally = self._tally.add_missed(leaked_untyped(before_leak, leaked))
+            self._bank_if_dead()
             self._refresh()
             return
+        self._bank_if_dead()
         self._advance_wave(dt)
         if self._spawn_enabled:
             self._clock += dt
@@ -903,6 +971,16 @@ class ArenaScreen(Screen[None]):
                 self._clock = 0.0
                 self._spawn_foe()
         self._refresh()
+
+    def _bank_if_dead(self) -> None:
+        """Bank once when the run just ended; leak death shares it with tick."""
+        if (
+            self._app_ref is not None
+            and not self._practice
+            and not self._banked
+            and self._arena.hp <= 0.0
+        ):
+            self._app_ref.bank_run(self)
 
     def _advance_wave(self, dt: float) -> None:
         """Advance wave clocks, trigger boss clear rewards and tier music."""
@@ -1104,9 +1182,17 @@ class ArenaScreen(Screen[None]):
             now,
             accuracy=tally_accuracy(self._tally),
             consistency=consistency(self._wpm_samples(now)).value,
+            stun_duration=self._stun_duration,
         )
         self._arena = state
         self._tally = self._tally.add(tally_of(outcome, locked))
+        if self._app_ref is not None and not isinstance(outcome, NoTarget):
+            previous = self._press_times[-2] if len(self._press_times) > 1 else now
+            self._app_ref.note_keystroke(
+                ch,
+                now - previous,
+                correct=isinstance(outcome, (Advanced, Kill)),
+            )
         if isinstance(outcome, Kill):
             self._kill_times.append(now)
             play_event(self._audio_config(), Sound.KILL)
@@ -1136,6 +1222,17 @@ class ArenaScreen(Screen[None]):
         if self._arena.hp <= 0.0:
             if ch == "r" and self._app_ref is not None:
                 _ = self._app_ref.push_screen(self._app_ref.report_screen())
+            return True
+        if ch in ("1", "2", "3"):
+            index = int(ch) - 1
+            if index < len(self._arena.held):
+                self._arena = use_held(
+                    self._arena,
+                    index,
+                    time.monotonic(),
+                    veil_bonus=self._veil_bonus,
+                )
+                self._refresh()
             return True
         return False
 
@@ -1179,7 +1276,7 @@ class ArenaScreen(Screen[None]):
                     self._app_ref.suspend_to_hub()
             case PauseAction.QUIT:
                 if self._app_ref is not None:
-                    self._app_ref.exit()
+                    self._app_ref.quit_to_desktop()
             case _:
                 assert_never(action)
         self._refresh()
@@ -1239,7 +1336,7 @@ class ArenaScreen(Screen[None]):
         if drop is None:
             return
         now = time.monotonic()
-        self._arena = apply_pickup(self._arena, drop, now)
+        self._arena = apply_pickup(self._arena, drop, now, veil_bonus=self._veil_bonus)
         if drop.name == "CHAIN_SPARK":
             self._arena, _ = chain_lightning(
                 self._arena,
@@ -2050,31 +2147,45 @@ class ShopScreen(Screen[None]):
 
     @override
     def compose(self) -> ComposeResult:
-        """Title, wallet, one numbered row per catalog perk, key hint."""
+        """Title, wallet, one numbered row per catalog line, key hint."""
         yield Label("VOID MARKET", id="shop-title")
         yield Label(f"gold {self._profile.gold}", id="shop-gold")
         for index, item in enumerate(SHOP_CATALOG, start=1):
-            row = shop_row_text(
-                item.name,
-                item.price,
-                item.blurb,
-                owned=item.id in self._profile.shop,
-            )
-            yield Label(f"{index} {row}", id=f"shop-item-{index}")
+            yield Label(f"{index} {self._row_text(item)}", id=f"shop-item-{index}")
         yield Label("", id="shop-message")
         yield Label(
-            "1-3 buy and return to arena  Q back without buying",
+            "1-7 buy (ranks stack)  0 refund all  Q back without buying",
             id="shop-hint",
         )
 
+    def _row_text(self, item: ShopItem) -> str:
+        """One catalog row with the live rank pips and the next price."""
+        rank = shop_rank(self._profile, item.id)
+        return shop_row_text(
+            item.name,
+            price_for(item, rank),
+            item.blurb,
+            owned=item.id in self._profile.shop,
+            rank=rank,
+            max_rank=item.max_rank,
+        )
+
     async def on_key(self, event: events.Key) -> None:
-        """Buy keys purchase and restart; Q leaves without buying."""
+        """Digit keys buy ranks in place; 0 refunds; Q leaves the market."""
         if event.key == "q":
             _ = self._app_ref.pop_screen()
             return
-        if event.key not in ("1", "2", "3"):
+        if event.key == "0":
+            self._profile, refunded = refund_all(self._profile)
+            self._app_ref.apply_profile(self._profile)
+            self._refresh_shop(f"refunded {refunded}g from every shop line")
             return
-        item = SHOP_CATALOG[int(event.key) - 1]
+        if len(event.key) != 1 or not event.key.isdigit():
+            return
+        index = int(event.key) - 1
+        if index >= len(SHOP_CATALOG):
+            return
+        item = SHOP_CATALOG[index]
         try:
             bought = buy_item(self._profile, item.id)
         except ShopError as exc:
@@ -2082,7 +2193,16 @@ class ShopScreen(Screen[None]):
             return
         self._profile = bought
         self._app_ref.apply_profile(bought)
-        self._app_ref.return_to_arena()
+        self._refresh_shop(f"{item.name} now rank {shop_rank(bought, item.id)}")
+
+    def _refresh_shop(self, message: str) -> None:
+        """Repaint wallet, rows, and message so repeat buys read fresh."""
+        self.query_one("#shop-gold", Label).update(f"gold {self._profile.gold}")
+        for index, item in enumerate(SHOP_CATALOG, start=1):
+            self.query_one(f"#shop-item-{index}", Label).update(
+                f"{index} {self._row_text(item)}",
+            )
+        self.query_one("#shop-message", Label).update(message)
 
 
 class SettingsScreen(Screen[None]):
@@ -2186,6 +2306,10 @@ class TypeSurvivorsApp(App[None]):
             self._profile: Profile = Profile(
                 settings=Settings(sound_on=default_enabled()),
             )
+            if profile_dir is not None:
+                with contextlib.suppress(ProfileError):
+                    # Trashed save boots fresh; the .bak keeps the bytes.
+                    self._profile = load_profile(profile_dir)
         else:
             self._profile = profile
         self._profile_dir: Path | None = profile_dir
@@ -2211,9 +2335,57 @@ class TypeSurvivorsApp(App[None]):
         """Current player profile (shop/settings write back through this)."""
         return self._profile
 
-    def apply_profile(self, profile: Profile) -> None:
-        """Replace the profile after a shop or settings write."""
+    def apply_profile(self, profile: Profile, *, save: bool = True) -> None:
+        """Replace the profile after a shop or settings write, saving it."""
         self._profile = profile
+        if save and self._profile_dir is not None:
+            with contextlib.suppress(ProfileError):
+                save_profile(self._profile_dir, profile)
+
+    def note_keystroke(self, key: str, dt: float, *, correct: bool) -> None:
+        """Fold one typed char into per-key stats; the run end saves them."""
+        self.apply_profile(
+            record_keystroke(self._profile, key, correct=correct, dt=dt),
+            save=False,
+        )
+
+    def bank_run(self, arena: ArenaScreen) -> None:
+        """Bank one finished run: earnings, history, checkpoint cleared, saved."""
+        state = arena.arena_state
+        greed = shop_rank(self._profile, "greed")
+        profile = bank_gold(
+            self._profile,
+            state.kills,
+            max(0, state.wave - 1),
+            gold_per_kill=GOLD_PER_KILL + greed * GREED_GOLD_PER_RANK,
+        )
+        history = (
+            *profile.runs,
+            RunSummary(
+                wpm_samples=arena.wpm_trail,
+                accuracy=tally_accuracy(arena.tally),
+                kills=state.kills,
+                wave=state.wave,
+                score=int(state.score),
+                duration_s=arena.clock,
+            ),
+        )[-_RUN_HISTORY_CAP:]
+        arena.mark_banked()
+        self.apply_profile(profile.model_copy(update={"runs": history}))
+        if self._profile_dir is not None:
+            with contextlib.suppress(CheckpointError):
+                clear_checkpoint(self._profile_dir)
+
+    def quit_to_desktop(self) -> None:
+        """Bank the live run once (quit ends it), then exit the app."""
+        screen = self.screen
+        if (
+            isinstance(screen, ArenaScreen)
+            and not screen.is_practice
+            and not screen.run_banked
+        ):
+            self.bank_run(screen)
+        self.exit()
 
     def start_run(self, *, practice: bool = False) -> None:
         """Push a fresh arena (practice pins HP via the no-death tick)."""
@@ -2313,16 +2485,31 @@ class TypeSurvivorsApp(App[None]):
         state: ArenaState | None = None,
         practice: bool = False,
     ) -> ArenaScreen:
-        """Build an arena with the app config, optionally checkpoint-restored."""
+        """Build an arena with the app config, checkpoint-restored."""
+        vitality = shop_rank(self._profile, "vitality")
+        focus = shop_rank(self._profile, "focus")
+        chill = shop_rank(self._profile, "deep-chill")
+        weak = self._weak_keys or tuple(
+            weak_keys_for_spawn(self._profile, time.monotonic()),
+        )
         screen = ArenaScreen(
             initial_words=self._initial_words,
             initial_boss=self._initial_boss,
             app=self,
             spawn_enabled=self._spawn_enabled,
-            weak_keys=self._weak_keys,
+            weak_keys=weak,
             seed=self._seed,
             practice=practice,
             checkpoint_dir=self._profile_dir,
+            max_hp_bonus=vitality * VITALITY_HP_PER_RANK,
+            stun_duration=max(
+                _MIN_STUN_S,
+                STUN_DURATION - focus * FOCUS_STUN_RELIEF_PER_RANK,
+            ),
+            veil_bonus=chill * DEEP_CHILL_SECONDS_PER_RANK,
+            held=tuple(
+                CACHE_TO_KIND[item_id] for item_id in starting_perks(self._profile)
+            ),
         )
         if state is not None:
             screen.set_restored(state)

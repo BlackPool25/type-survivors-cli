@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Final
 
 from tsurv.arena import (
+    HELD_MAX,
     LEAK_DAMAGE,
     EnemyKind,
     Score,
@@ -20,6 +22,8 @@ from tsurv.arena import (
     reset_word,
     roll_drop,
     spawn_enemy,
+    stow_item,
+    use_held,
 )
 from tsurv.combat import (
     SHIELD_DURATION,
@@ -40,6 +44,8 @@ _LONG_WINDOW = 50.0
 _BELOW_RATE = 0.05
 _ABOVE_RATE = 0.50
 _CHAIN_ARCS: Final = 2
+_VITALITY_HP: Final = 130.0
+"""Hull with three vitality ranks: 100 + 3 x 10."""
 
 
 def _word(text: str, corruption: Corruption = Corruption.CLEAN) -> Word:
@@ -260,3 +266,36 @@ def test_chain_lightning_caps_at_two_arcs() -> None:
     after, zapped = chain_lightning(state, state.enemies[0].id)
     assert zapped == _CHAIN_ARCS
     assert len(after.enemies) == _CHAIN_ARCS
+
+
+def test_stow_item_holds_starting_perk() -> None:
+    """Shop caches ride in the held slots until hotkeyed."""
+    state = stow_item(initial_arena(), ItemKind.BLOOD_VIAL, _NOW)
+    assert state.held == (ItemKind.BLOOD_VIAL,)
+
+
+def test_stow_overflow_auto_applies() -> None:
+    """A fourth held item never vanishes: it applies immediately."""
+    state = initial_arena()
+    for _ in range(HELD_MAX):
+        state = stow_item(state, ItemKind.FROST_VEIL, _NOW)
+    assert len(state.held) == HELD_MAX
+    state = replace(state, hp=50.0)
+    after = stow_item(state, ItemKind.BLOOD_VIAL, _NOW)
+    assert len(after.held) == HELD_MAX
+    assert after.hp == 50.0 + BLOOD_VIAL_HEAL
+
+
+def test_use_held_triggers_and_ejects_slot() -> None:
+    """Hotkeying a held vial heals and frees its slot."""
+    state = replace(stow_item(initial_arena(), ItemKind.BLOOD_VIAL, _NOW), hp=50.0)
+    after = use_held(state, 0, _NOW)
+    assert after.hp == 50.0 + BLOOD_VIAL_HEAL
+    assert after.held == ()
+
+
+def test_initial_arena_honors_max_hp() -> None:
+    """Vitality ranks raise the hull ceiling the run starts with."""
+    state = initial_arena(hp=_VITALITY_HP, max_hp=_VITALITY_HP)
+    assert state.hp == _VITALITY_HP
+    assert state.max_hp == _VITALITY_HP

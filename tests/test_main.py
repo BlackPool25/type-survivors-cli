@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
-from tsurv.__main__ import build_app, main, parse_args
+from tsurv.__main__ import build_app, default_profile_dir, main, parse_args
 from tsurv.app import ArenaScreen, HubScreen
+from tsurv.profile import PROFILE_FILENAME, Profile, save_profile
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+_SAVED_GOLD: Final = 77
+"""Wallet written by the save/load round-trip test."""
 
 
 def test_parse_args_defaults_to_hub() -> None:
@@ -73,3 +77,22 @@ def test_resume_flag_launches_arena_not_hub(tmp_path: Path) -> None:
             assert isinstance(app.screen, ArenaScreen)
 
     asyncio.run(_scenario())
+
+
+def test_default_profile_dir_names_game() -> None:
+    """The data home ends in type-survivors on every platform."""
+    assert default_profile_dir().name == "type-survivors"
+
+
+def test_build_app_loads_saved_profile(tmp_path: Path) -> None:
+    """A saved wallet greets the player; progress survives restarts."""
+    save_profile(tmp_path, Profile(gold=_SAVED_GOLD))
+    assert build_app(parse_args(()), tmp_path).profile.gold == _SAVED_GOLD
+
+
+def test_build_app_falls_back_on_corrupt_profile(tmp_path: Path) -> None:
+    """A trashed save never blocks boot; the player starts fresh."""
+    _ = (tmp_path / PROFILE_FILENAME).write_text("{nope", encoding="utf-8")
+    assert build_app(parse_args(()), tmp_path).profile == Profile(
+        settings=build_app(parse_args(()), None).profile.settings,
+    )

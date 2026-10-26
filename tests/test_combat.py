@@ -81,6 +81,22 @@ def test_wrong_char_stuns_and_resets_streak() -> None:
     assert result == TypoStun(stun_until=10.0 + STUN_DURATION, streak=0)
 
 
+def test_focus_rank_shortens_typo_stun() -> None:
+    """Focus ranks shrink the jam window through the stun_duration knob."""
+    enemies = (_enemy(0, "cat"),)
+    result = apply_keystroke(
+        "x",
+        enemies,
+        EnemyId(0),
+        1,
+        5,
+        10.0,
+        0.0,
+        stun_duration=0.4,
+    )
+    assert result == TypoStun(stun_until=10.4, streak=0)
+
+
 def test_completing_word_kills() -> None:
     """Typing the final char kills and bumps the streak."""
     enemies = (_enemy(0, "cat"),)

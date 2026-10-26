@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import pytest
 
@@ -18,6 +18,11 @@ from tsurv.profile import (
     record_keystroke,
     save_profile,
 )
+
+_FIRST_GOLD: Final = 10
+"""First payload written by the profile backup test."""
+_SECOND_GOLD: Final = 20
+"""Second payload written by the profile backup test."""
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -46,7 +51,7 @@ def test_round_trip_save_load(tmp_path: Path) -> None:
     )
     profile = profile.model_copy(
         update={
-            "shop": ("second-wind",),
+            "shop": {"second-wind": 1},
             "hiscores": (1500,),
             "settings": Settings(palette=Palette.DEUTAN, sound_on=False),
             "runs": (run,),
@@ -54,6 +59,26 @@ def test_round_trip_save_load(tmp_path: Path) -> None:
     )
     save_profile(tmp_path, profile)
     assert load_profile(tmp_path) == profile
+
+
+def test_load_migrates_legacy_shop_list(tmp_path: Path) -> None:
+    """V0 perk-id lists load as rank-1 entries, gold untouched."""
+    _ = (tmp_path / PROFILE_FILENAME).write_text(
+        '{"gold": 50, "shop": ["blood-vial", "greed"]}',
+        encoding="utf-8",
+    )
+    profile = load_profile(tmp_path)
+    assert profile.shop == {"blood-vial": 1, "greed": 1}
+    assert profile.version == 1
+
+
+def test_save_keeps_previous_backup(tmp_path: Path) -> None:
+    """The second save preserves the first payload in .bak (fsync-durable)."""
+    save_profile(tmp_path, Profile(gold=_FIRST_GOLD))
+    save_profile(tmp_path, Profile(gold=_SECOND_GOLD))
+    assert load_profile(tmp_path).gold == _SECOND_GOLD
+    backup_raw = (tmp_path / f"{PROFILE_FILENAME}.bak").read_text(encoding="utf-8")
+    assert f'"gold":{_FIRST_GOLD}' in backup_raw.replace(" ", "")
 
 
 def test_load_corrupt_json_raises(tmp_path: Path) -> None:

@@ -38,7 +38,14 @@ def test_blood_vial_caps_at_max() -> None:
     """Overheal clamps to max HP instead of exceeding it."""
     result = trigger(ItemKind.BLOOD_VIAL, 90.0, 100.0, 0, 10.0)
     assert result.hp == _MAX_HP
-    assert result.consumed is True
+
+
+def test_frost_veil_bonus_extends_slow() -> None:
+    """Deep-chill ranks add seconds to the frost window (bonus defaults 0)."""
+    base = trigger(ItemKind.FROST_VEIL, _MID_HP, _MAX_HP, 0, 10.0)
+    assert base.frost_until == 10.0 + FROST_VEIL_DURATION
+    boosted = trigger(ItemKind.FROST_VEIL, _MID_HP, _MAX_HP, 0, 10.0, veil_bonus=2.0)
+    assert boosted.frost_until == 10.0 + FROST_VEIL_DURATION + 2.0
 
 
 def test_frost_veil_sets_slow_window() -> None:

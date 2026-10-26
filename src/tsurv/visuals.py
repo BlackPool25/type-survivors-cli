@@ -536,7 +536,19 @@ def hub_greeting(*, gold: int, runs: int) -> str:
     return f"welcome back — {runs} runs, {gold}g banked"
 
 
-def shop_row_text(name: str, price: int, blurb: str, *, owned: bool) -> str:
-    """One shop row: OWNED tag or gold price, always beside the blurb."""
-    tag = "OWNED" if owned else f"{price}g"
+def shop_row_text(  # noqa: PLR0913 - one row renders name/price/blurb/state in one call
+    name: str,
+    price: int,
+    blurb: str,
+    *,
+    owned: bool,
+    rank: int = 0,
+    max_rank: int = 1,
+) -> str:
+    """One shop row: rank pips (or OWNED for caches), price, blurb."""
+    if max_rank > 1:
+        pips = "●" * rank + "○" * (max_rank - rank)
+        tag = f"{pips} {price}g"
+    else:
+        tag = "OWNED" if owned else f"{price}g"
     return f"{name} — {tag} · {blurb}"

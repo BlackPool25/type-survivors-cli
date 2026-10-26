@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
+
+from platformdirs import PlatformDirs
 
 from tsurv.app import TypeSurvivorsApp, is_narrow
 
@@ -55,10 +56,8 @@ def parse_args(argv: Sequence[str]) -> Args:
 
 
 def default_profile_dir() -> Path:
-    """Checkpoint home: XDG data dir, so --resume survives restarts."""
-    xdg = os.environ.get("XDG_DATA_HOME")
-    base = Path(xdg) if xdg else Path.home() / ".local" / "share"
-    return base / "type-survivors"
+    """Per-user data home on every OS, so saves survive restarts."""
+    return Path(PlatformDirs("type-survivors", "type-survivors").user_data_dir)
 
 
 def build_app(args: Args, profile_dir: Path | None = None) -> TypeSurvivorsApp:

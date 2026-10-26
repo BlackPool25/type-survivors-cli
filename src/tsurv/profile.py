@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import math
+import os
+import shutil
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING, ClassVar, Final, Self, assert_never
+from typing import TYPE_CHECKING, ClassVar, Final, Self, assert_never, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -151,13 +160,26 @@ class Profile(BaseModel):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(frozen=True)
 
+    version: int = Field(default=1, ge=1)
     gold: int = Field(default=0, ge=0)
-    shop: tuple[str, ...] = ()
+    shop: dict[str, int] = Field(default_factory=dict)
     hiscores: tuple[int, ...] = ()
     settings: Settings = Field(default_factory=Settings)
     per_key: dict[str, KeyStat] = Field(default_factory=dict)
     runs: tuple[RunSummary, ...] = ()
     base_wpm: float | None = Field(default=None, ge=0.0)
+
+    @field_validator("shop", mode="before")
+    @classmethod
+    def _migrate_shop(cls, value: object) -> object:
+        """Accept the v0 perk-id list (each owned once); v1 stores ranks."""
+        if isinstance(value, dict):
+            return cast("dict[str, int]", value)
+        if isinstance(value, (list, tuple)):
+            raw_ids = cast("list[object] | tuple[object, ...]", value)
+            migrated: dict[str, int] = {str(item_id): 1 for item_id in raw_ids}
+            return migrated
+        return value
 
     @model_validator(mode="after")
     def _check_palette(self) -> Self:
@@ -181,16 +203,32 @@ def load_profile(profile_dir: Path) -> Profile:
         raise ProfileError(msg) from exc
 
 
+def atomic_write_text(path: Path, payload: str) -> None:
+    """Durable save: fsynced tmp file, previous payload kept in .bak, then replace.
+
+    The .bak copy lands before the replace, so a crash mid-write leaves
+    either the old or the new payload intact — never a torn file. The .bak
+    itself is best-effort (no fsync); the live file carries the guarantee.
+    """
+    tmp = path.with_name(f"{path.name}.tmp")
+    _ = tmp.write_text(payload, encoding="utf-8")
+    with tmp.open("rb") as handle:
+        os.fsync(handle.fileno())
+    if path.is_file():
+        _ = shutil.copyfile(path, path.with_name(f"{path.name}.bak"))
+    _ = tmp.replace(path)
+
+
 def save_profile(profile_dir: Path, profile: Profile) -> None:
     """Atomically write the profile so a crash never corrupts the save."""
     profile_dir.mkdir(parents=True, exist_ok=True)
-    path = profile_dir / PROFILE_FILENAME
-    tmp = path.with_name(f"{PROFILE_FILENAME}.tmp")
     try:
-        _ = tmp.write_text(profile.model_dump_json(), encoding="utf-8")
-        _ = tmp.replace(path)
+        atomic_write_text(
+            profile_dir / PROFILE_FILENAME,
+            profile.model_dump_json(),
+        )
     except OSError as exc:
-        msg = f"cannot save profile to {path}: {exc}"
+        msg = f"cannot save profile to {profile_dir / PROFILE_FILENAME}: {exc}"
         raise ProfileError(msg) from exc
 
 
