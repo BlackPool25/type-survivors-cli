@@ -170,11 +170,13 @@ from tsurv.visuals import (
     sprite_path,
 )
 from tsurv.words import (
+    OPENING_MAX_LEN,
     TIER_WORDS,
     Tier,
     Word,
     WordText,
     chunk_boss_sentence,
+    deal_word,
     pick_word,
 )
 
@@ -576,6 +578,7 @@ class ArenaScreen(Screen[None]):
         self._kill_times: list[float] = []
         self._kill_samples: list[KillSample] = []
         self._word_start: float | None = None
+        self._strain: float = 0.0
         self._press_times: list[float] = []
         self._best_streak: int = 0
         self._nova_good_seconds: float = 0.0
@@ -1068,12 +1071,17 @@ class ArenaScreen(Screen[None]):
             if self._app_ref is not None
             else ()
         )
-        word = pick_word(
+        ability = service_wpm(self._kill_samples) or REF_WPM
+        opening = OPENING_MAX_LEN if self._arena.wave <= 1 else None
+        word = deal_word(
             tier,
             (),
             shown,
+            ability_wpm=ability,
             weak_keys=self._weak_keys,
             overdue_keys=overdue,
+            strain=self._strain,
+            max_len=opening,
         )
         kind = EnemyKind.GRUNT if len(shown) % 3 else EnemyKind.MITE
         room = MAX_FOES - len(self._arena.enemies)
@@ -1083,12 +1091,15 @@ class ArenaScreen(Screen[None]):
         dealt = [*shown]
         words: list[Word] = []
         for _ in range(count):
-            word = pick_word(
+            word = deal_word(
                 tier,
                 (),
                 dealt,
+                ability_wpm=ability,
                 weak_keys=self._weak_keys,
                 overdue_keys=overdue,
+                strain=self._strain,
+                max_len=opening,
             )
             words.append(word)
             dealt.append(str(word.text))

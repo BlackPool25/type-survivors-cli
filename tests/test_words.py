@@ -13,14 +13,23 @@ from pydantic import TypeAdapter
 from tsurv import words
 from tsurv.words import (
     _WORDS_DIR,
+    MAX_TARGET_LEN,
+    MIN_TARGET_LEN,
+    OPENING_MAX_LEN,
+    OVERDUE_COST,
     TIER_WORDS,
+    WEAK_KEY_COST,
     Tier,
     Word,
     WordSelectionError,
     WordText,
     chunk_boss_sentence,
+    deal_score,
+    deal_word,
     pick_word,
+    target_length,
     weak_hits,
+    word_difficulty,
 )
 
 _T1_MIN_LEN = 3
@@ -260,6 +269,9 @@ _SEEDED_DRAWS: Final = 2000
 _SEED: Final = 7
 """Fixed RNG seed making the bias distribution deterministic."""
 
+_MID_TARGET: Final = 8.0
+"""Ability target for a 40 WPM typist (a fifth of pace)."""
+
 
 def _seeded_draws(*, weak_keys: tuple[str, ...]) -> list[WordText]:
     """Draw words from a freshly seeded RNG (deterministic per seed)."""
@@ -285,3 +297,65 @@ def test_pick_word_seeded_rng_biases_weak_keys() -> None:
     plain_hits = sum(1 for word in plain if weak_hits(str(word), (_SEEDED_KEY,)))
     assert hooked_hits > plain_hits
     assert any(not weak_hits(str(word), (_SEEDED_KEY,)) for word in hooked)
+
+
+def test_word_difficulty_counts_length_then_weak_keys() -> None:
+    """Length is the base; weak and overdue hits add fixed costs."""
+    assert word_difficulty("cat", (), ()) == len("cat")
+    assert word_difficulty("zebra", ("z",), ()) == len("zebra") + WEAK_KEY_COST
+    assert (
+        word_difficulty("zebra", ("z",), ("z",))
+        == len("zebra") + WEAK_KEY_COST + OVERDUE_COST
+    )
+    assert word_difficulty("zebra", ("q",), ()) == len("zebra")
+
+
+def test_target_length_tracks_ability_with_caps() -> None:
+    """Slow typists get short words; fast ones hit the pool ceiling."""
+    assert target_length(15.0) == MIN_TARGET_LEN
+    assert target_length(40.0) == _MID_TARGET
+    assert target_length(200.0) == MAX_TARGET_LEN
+
+
+def test_deal_score_trains_weak_when_calm_spares_when_strained() -> None:
+    """Equal-length words split on weak hits by the strain signal."""
+    calm_weak = deal_score("cat", 3.0, ("c",), (), 0.0)
+    calm_clean = deal_score("bat", 3.0, ("c",), (), 0.0)
+    assert calm_weak < calm_clean
+    hot_weak = deal_score("cat", 3.0, ("c",), (), 1.0)
+    hot_clean = deal_score("bat", 3.0, ("c",), (), 1.0)
+    assert hot_weak > hot_clean
+
+
+def test_deal_word_stays_near_ability() -> None:
+    """Dealt words land within one char of the ability target."""
+    slow = deal_word(
+        Tier.T1,
+        (),
+        (),
+        ability_wpm=15.0,
+        rng=random.Random(_SEED),  # noqa: S311
+    )
+    assert abs(len(slow.text) - MIN_TARGET_LEN) <= 1
+    mid = deal_word(
+        Tier.T2,
+        (),
+        (),
+        ability_wpm=40.0,
+        rng=random.Random(_SEED),  # noqa: S311
+    )
+    assert abs(len(mid.text) - _MID_TARGET) <= 1
+
+
+def test_deal_word_honors_opening_cap() -> None:
+    """Wave-1 rails cap every dealt word at four characters."""
+    for _ in range(20):
+        word = deal_word(
+            Tier.T1,
+            (),
+            (),
+            ability_wpm=15.0,
+            max_len=OPENING_MAX_LEN,
+            rng=random.Random(),  # noqa: S311 - unseeded single draw
+        )
+        assert len(word.text) <= OPENING_MAX_LEN

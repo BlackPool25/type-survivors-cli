@@ -32,6 +32,24 @@ _T3_MIN_LEN: Final = 9
 _HISTORY_WINDOW: Final = 30
 _MAX_SHARED_INITIALS: Final = 2
 
+WEAK_KEY_COST: Final = 2.0
+"""Extra difficulty chars per distinct weak key inside a word."""
+
+OVERDUE_COST: Final = 2.0
+"""Extra difficulty chars per distinct overdue-review key inside a word."""
+
+WEAK_SWING: Final = 6.0
+"""Deal bias: calm strain favors weak words, high strain avoids them."""
+
+MIN_TARGET_LEN: Final = 3.0
+"""Ability target never asks for shorter words (beginner floor)."""
+
+MAX_TARGET_LEN: Final = 12.0
+"""Ability target never asks for longer words (pool ceiling)."""
+
+OPENING_MAX_LEN: Final = 4
+"""Wave-1 rails: no opening word exceeds this length."""
+
 WordText = NewType("WordText", str)
 """A word safe to spawn: deduplicated, swear-filtered, non-empty."""
 
@@ -237,6 +255,107 @@ def reweight_for_review(
     return (*hot * (WEAK_KEY_BOOST * REVIEW_BOOST), *cold * WEAK_KEY_BOOST, *rest)
 
 
+def _weak_hit_count(word: str, keys: Sequence[str]) -> int:
+    """Count distinct listed keys appearing anywhere in the word."""
+    lowered = word.lower()
+    return sum(1 for key in keys if key and key.lower() in lowered)
+
+
+def word_difficulty(
+    word: str,
+    weak_keys: Sequence[str] = (),
+    overdue_keys: Sequence[str] = (),
+) -> float:
+    """Word cost in chars: length plus weak-key and overdue-review surcharges."""
+    return (
+        float(len(word))
+        + WEAK_KEY_COST * _weak_hit_count(word, weak_keys)
+        + OVERDUE_COST * _weak_hit_count(word, overdue_keys)
+    )
+
+
+def target_length(ability_wpm: float) -> float:
+    """Ability target in chars: a fifth of WPM, clamped to the rails."""
+    return min(max(ability_wpm / 5.0, MIN_TARGET_LEN), MAX_TARGET_LEN)
+
+
+def deal_score(
+    word: str,
+    target: float,
+    weak_keys: Sequence[str] = (),
+    overdue_keys: Sequence[str] = (),
+    strain: float = 0.0,
+) -> float:
+    """Deal score (lower wins): distance from target, swung by strain.
+
+    Calm strain favors weak-key words (training); high strain avoids them
+    (mercy). Overdue keys always cost, so review words surface when calm.
+    """
+    weak = _weak_hit_count(word, weak_keys) + _weak_hit_count(word, overdue_keys)
+    return abs(word_difficulty(word, weak_keys, overdue_keys) - target) + (
+        strain - 0.5
+    ) * WEAK_SWING * min(weak, 1)
+
+
+def _eligible(
+    tier: Tier,
+    history: Sequence[str],
+    on_screen: Sequence[str],
+    max_len: int | None = None,
+) -> list[WordText]:
+    """Pool words honoring screen/history/initials/length constraints."""
+    pool = _pool_for(tier)
+    recent = set(history[-_HISTORY_WINDOW:])
+    visible = set(on_screen)
+    eligible = [word for word in pool if word not in visible and word not in recent]
+    counts = Counter(word[0].lower() for word in on_screen if word)
+    preferred = [
+        word
+        for word in eligible
+        if counts.get(word[0].lower(), 0) < _MAX_SHARED_INITIALS
+    ]
+    candidates = preferred or eligible
+    if max_len is not None:
+        capped = [word for word in candidates if len(word) <= max_len]
+        if capped:
+            return capped
+    return candidates
+
+
+def deal_word(  # noqa: PLR0913 - dealer needs tier/ability/keys/strain/rails/rng
+    tier: Tier,
+    history: Sequence[str],
+    on_screen: Sequence[str],
+    *,
+    ability_wpm: float,
+    weak_keys: Sequence[str] = (),
+    overdue_keys: Sequence[str] = (),
+    strain: float = 0.0,
+    max_len: int | None = None,
+    rng: random.Random | None = None,
+) -> Word:
+    """Deal the word nearest the ability target, strained by pressure.
+
+    Calm strain serves weak-key words (training); high strain spares them.
+    Ties break randomly; `max_len` rails the opening wave. Raises
+    WordSelectionError when constraints empty the pool.
+    """
+    candidates = _eligible(tier, history, on_screen, max_len)
+    if not candidates:
+        msg = f"no {tier.value} word satisfies spawn constraints"
+        raise WordSelectionError(msg)
+    target = target_length(max(ability_wpm, 0.0))
+    scored = [
+        (deal_score(str(word), target, weak_keys, overdue_keys, strain), word)
+        for word in candidates
+    ]
+    best = min(score for score, _ in scored)
+    tied = [word for score, word in scored if score == best]
+    if rng is not None:
+        return Word(text=rng.choice(tied), tier=tier)
+    return Word(text=secrets.choice(tied), tier=tier)
+
+
 def pick_word(  # noqa: PLR0913 - spawn needs tier/history/screen/weak/overdue/rng
     tier: Tier,
     history: Sequence[str],
@@ -253,17 +372,7 @@ def pick_word(  # noqa: PLR0913 - spawn needs tier/history/screen/weak/overdue/r
     filter relaxes when it alone would empty the pool). Pass `rng` for a
     seeded, deterministic draw; without it the crypto source deals.
     """
-    pool = _pool_for(tier)
-    recent = set(history[-_HISTORY_WINDOW:])
-    visible = set(on_screen)
-    eligible = [word for word in pool if word not in visible and word not in recent]
-    counts = Counter(word[0].lower() for word in on_screen if word)
-    preferred = [
-        word
-        for word in eligible
-        if counts.get(word[0].lower(), 0) < _MAX_SHARED_INITIALS
-    ]
-    candidates = preferred or eligible
+    candidates = _eligible(tier, history, on_screen)
     if not candidates:
         msg = f"no {tier.value} word satisfies spawn constraints"
         raise WordSelectionError(msg)
