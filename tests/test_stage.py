@@ -23,6 +23,7 @@ from tsurv.stage import (
     art_origin,
     canvas_xy,
     chip_origin,
+    edge_spawn_distance,
     probe_renderer,
     render_field,
     select_renderer,
@@ -45,10 +46,10 @@ _ART_ROWS_MIN: Final = 4
 """Smallest roster art height in pixels (the mite)."""
 _ART_COLS_MIN: Final = 3
 """Smallest roster art width in pixels (the mite)."""
-_CORE_PAINT_HALF_W: Final = 1
-"""Half the painted core PNG width: the kitty trim leaves ~2 cells."""
+_CORE_PAINT_HALF_W: Final = 2
+"""Half the painted core PNG width: square trim leaves a 4x2 paint."""
 _CORE_PAINT_HALF_H: Final = 1
-"""Half the painted core PNG height: the kitty trim leaves ~2 cells."""
+"""Half the painted core PNG height: square trim leaves a 4x2 paint."""
 
 
 def test_force_truepixel_enables_kitty() -> None:
@@ -153,11 +154,19 @@ def test_canvas_clamps_to_viewport() -> None:
         assert 0 <= y < height
 
 
-def test_canvas_compact_halves_radius() -> None:
-    """Compact viewports halve the ring radius (sprites stay legible)."""
-    wide = canvas_xy(angle=0.0, distance=6.0, width=80, height=24)
-    compact = canvas_xy(angle=0.0, distance=6.0, width=80, height=24, compact=True)
-    assert wide[0] - 40 == 2 * (compact[0] - 40)
+def test_canvas_caps_radius_at_viewport_edge() -> None:
+    """Overshoot distances clamp to the border ellipse (foes spawn on-screen)."""
+    width = 80
+    height = 24
+    edge = canvas_xy(angle=0.0, distance=10_000.0, width=width, height=height)
+    assert edge == canvas_xy(
+        angle=0.0,
+        distance=edge_spawn_distance(angle=0.0, width=width, height=height),
+        width=width,
+        height=height,
+    )
+    assert 0 <= edge[0] < width
+    assert 0 <= edge[1] < height
 
 
 def test_canvas_scroll_shifts_east() -> None:

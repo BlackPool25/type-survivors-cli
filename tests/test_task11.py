@@ -16,11 +16,7 @@ from tsurv.arena import (
     seconds_to_impact,
     spawn_radius_for_level,
 )
-from tsurv.stage import canvas_xy
-from tsurv.visuals import COMPACT_WIDTH
-
-_EDGE_FRACTION: Final = 0.9
-"""Expected edge share: fresh foes spawn at 90% of the inscribed reach."""
+from tsurv.stage import canvas_xy, edge_spawn_distance
 
 _SQUASH: Final = 2
 """Cell aspect squash, mirroring the stage ring math (cells are ~2x tall)."""
@@ -95,7 +91,6 @@ def _canvas_pos(
         distance=foe.distance,
         width=width,
         height=height,
-        compact=width < COMPACT_WIDTH,
     )
 
 
@@ -130,17 +125,18 @@ def test_edge_spawn_distance_grows_with_viewport_wide(
 
     async def _scenario() -> None:
         distance, angle, width, height = await _fresh_wave1_foe(_WIDE_SIZE)
-        reach = _reach(width, height)
-        edge = _EDGE_FRACTION * reach / _SQUASH
+        edge = edge_spawn_distance(angle=angle, width=width, height=height)
         assert distance == pytest.approx(max(spawn_radius_for_level(1), edge))
         x, y = canvas_xy(
             angle=angle,
             distance=distance,
             width=width,
             height=height,
-            compact=width < COMPACT_WIDTH,
         )
-        assert _cell_radius(x, y, width // 2, height // 2) >= _CELL_FRAC * reach
+        assert _cell_radius(x, y, width // 2, height // 2) >= _CELL_FRAC * _reach(
+            width,
+            height,
+        )
 
     monkeypatch.setenv("TSURV_TRUEPIXEL", "0")
     asyncio.run(_scenario())
@@ -152,9 +148,8 @@ def test_edge_spawn_distance_keeps_floor_small(
     """Small screens keep at least level-1 travel: the floor never shrinks."""
 
     async def _scenario() -> None:
-        distance, _angle, width, height = await _fresh_wave1_foe(_SMALL_SIZE)
-        reach = _reach(width, height)
-        edge = _EDGE_FRACTION * reach / _SQUASH
+        distance, angle, width, height = await _fresh_wave1_foe(_SMALL_SIZE)
+        edge = edge_spawn_distance(angle=angle, width=width, height=height)
         assert distance == pytest.approx(max(spawn_radius_for_level(1), edge))
 
     monkeypatch.setenv("TSURV_TRUEPIXEL", "0")

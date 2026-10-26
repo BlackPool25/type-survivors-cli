@@ -23,7 +23,13 @@ from tsurv.arena import (
     spawn_radius_for_level,
     world_xy,
 )
-from tsurv.stage import RendererKind, probe_renderer, select_renderer, world_to_cell
+from tsurv.stage import (
+    RendererKind,
+    edge_spawn_distance,
+    probe_renderer,
+    select_renderer,
+    world_to_cell,
+)
 
 if TYPE_CHECKING:
     import pytest
@@ -108,7 +114,16 @@ def test_spawn_foe_deals_simultaneous_wave() -> None:
             foes = screen.arena_state.enemies
             assert len(foes) == spawn_count_for_level(3)
             radius = spawn_radius_for_level(3)
-            assert all(foe.distance == radius for foe in foes)
+            stage = screen.query_one("#stage")
+            width = stage.content_size.width
+            height = stage.content_size.height
+            for foe in foes:
+                edge = edge_spawn_distance(
+                    angle=foe.angle,
+                    width=width,
+                    height=height,
+                )
+                assert foe.distance == max(radius, edge)
             assert _angular_gap(foes[0].angle, foes[1].angle) >= _MIN_SEPARATION
 
     asyncio.run(_scenario())

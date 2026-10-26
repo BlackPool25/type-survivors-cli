@@ -60,10 +60,10 @@ _GUARD_CELLS: Final = 2
 """True-pixel guard: widget content must clear 2 cells on every protocol."""
 _CORE_OFF_TOLERANCE: Final = 8
 """Core sprite center may trail the row center by half a word chip."""
-_CORE_CELLS_W: Final = 12
-"""Core widget width: the Sanctuary Core renders large, never a label."""
-_CORE_CELLS_H: Final = 4
-"""Core widget height: the Sanctuary Core renders large, never a label."""
+_CORE_CELLS_W: Final = 10
+"""Core widget width: square sprite family (10x6) with a 4x2 paint."""
+_CORE_CELLS_H: Final = 6
+"""Core widget height: square sprite family (10x6) with a 4x2 paint."""
 _CORE_CENTER_TOL: Final = 2
 """Core sprite center sits on the viewport centre within two cells."""
 _RING_SPAWNS: Final = 8

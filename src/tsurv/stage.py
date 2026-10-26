@@ -58,8 +58,8 @@ _UNKNOWN_REASON: Final = "no graphics protocol"
 _RADIUS_PER_DISTANCE: Final = 2
 """Canvas cells of ring radius per distance unit (foes ring the core)."""
 
-_EDGE_FRACTION: Final = 0.9
-"""Share of the inscribed-circle reach where fresh foes spawn (near the edge)."""
+_EDGE_MARGIN: Final = 1
+"""Canvas cells of margin: spawns sit one cell inside the border, sprites on-field."""
 
 _SQUASH: Final = 2
 """Vertical squash: cells are ~2x tall, so y radius halves for round rings."""
@@ -184,29 +184,46 @@ def probe_renderer(
     return pick
 
 
-def canvas_xy(  # noqa: PLR0913 - ring math needs angle, distance, framing
+def _ellipse_caps(width: int, height: int) -> tuple[int, int]:
+    """Border-ellipse semi-axes in cells, shared by mapping and spawner.
+
+    Wide axes shrink one cell so a 4x2 paint sits fully on-field; tiny
+    axes (cap 2 or less) keep full reach, where a margin would eat them.
+    """
+    cap_x = max(width // 2 - 1, 0)
+    cap_y = max(height // 2 - 1, 0)
+    if cap_x > _EDGE_MARGIN + 1:
+        cap_x -= _EDGE_MARGIN
+    if cap_y > _EDGE_MARGIN + 1:
+        cap_y -= _EDGE_MARGIN
+    return (cap_x, cap_y)
+
+
+def canvas_xy(
     *,
     angle: float,
     distance: float,
     width: int,
     height: int,
     scroll: int = 0,
-    compact: bool = False,
 ) -> tuple[int, int]:
     """Polar foe placement mapped to canvas cells across the whole field.
 
-    Distance zero lands dead-center; radius caps at the largest circle that
-    fits, clamped into the viewport. ``scroll`` pans east after a wave
-    clears; ``compact`` halves the radius on narrow viewports.
+    Distance zero lands dead-center; radius caps per angle at the ellipse
+    inscribed in the field (half-width along x, half-height along y), so
+    wide screens use their full width instead of an inscribed circle.
+    ``scroll`` pans east after a wave clears.
     """
     cx = width // 2
     cy = height // 2
-    reach = max(min(width, height * _SQUASH) // _SQUASH - _SQUASH, 0)
-    radius = min(int(distance * _RADIUS_PER_DISTANCE), reach)
-    if compact:
-        radius //= _SQUASH
-    x = cx + round(cos(angle) * radius) + scroll
-    y = cy + round(sin(angle) * radius / _SQUASH)
+    dir_x = cos(angle)
+    dir_y = sin(angle) / _SQUASH
+    cap_x, cap_y = _ellipse_caps(width, height)
+    denom = (dir_x / cap_x) ** 2 + (dir_y / cap_y) ** 2 if cap_x and cap_y else 0.0
+    cap = 1.0 / denom**0.5 if denom > 0.0 else 0.0
+    radius = min(distance * _RADIUS_PER_DISTANCE, cap)
+    x = cx + round(dir_x * radius) + scroll
+    y = cy + round(dir_y * radius)
     return (
         min(max(x, 0), max(width - 1, 0)),
         min(max(y, 0), max(height - 1, 0)),
@@ -230,16 +247,21 @@ def world_to_cell(*, x: float, y: float, width: int, height: int) -> tuple[int, 
     )
 
 
-def edge_spawn_distance(*, width: int, height: int) -> float:
-    """World units placing a fresh foe at the visible field edge.
+def edge_spawn_distance(*, angle: float, width: int, height: int) -> float:
+    """World units placing a fresh foe at the visible field edge, per angle.
 
-    Inverts the ring math (two cells per unit, capped at the inscribed
-    reach): spawning here lands every unit of travel on the canvas, so no
-    distance burns invisibly behind the clamp. Compact halving cancels out,
-    so the same distance reads as the edge fraction on narrow screens too.
+    Inverts the ring math along the spawn ray (two cells per unit): spawning
+    here lands every unit of travel on the canvas, so no distance burns
+    invisibly behind the clamp. Wide axes shrink one cell, so a 4x2 paint
+    sits fully on-field; tiny axes (cap 2 or less) keep full reach, where a
+    margin would eat the whole axis.
     """
-    reach = max(min(width, height * _SQUASH) // _SQUASH - _SQUASH, 0)
-    return _EDGE_FRACTION * reach / _RADIUS_PER_DISTANCE
+    cap_x, cap_y = _ellipse_caps(width, height)
+    dir_x = cos(angle)
+    dir_y = sin(angle) / _SQUASH
+    denom = (dir_x / cap_x) ** 2 + (dir_y / cap_y) ** 2 if cap_x and cap_y else 0.0
+    cap = 1.0 / denom**0.5 if denom > 0.0 else 0.0
+    return cap / _RADIUS_PER_DISTANCE
 
 
 def art_origin(x: int, y: int, art: tuple[str, ...]) -> tuple[int, int]:

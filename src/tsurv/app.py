@@ -105,7 +105,6 @@ from tsurv.stage import (
 )
 from tsurv.visuals import (
     BOB_FPS,
-    COMPACT_WIDTH,
     HUB_ENTRIES,
     HubEntry,
     agitated,
@@ -147,8 +146,17 @@ _sprite_cache: dict[str, Image.Image] = {}
 """Loaded sprite art, cached so TerminalImage never holds file handles open."""
 
 
+_ARENA_VOID: Final = (11, 11, 18)
+"""Backdrop RGB of the arena void: kitty-safe sprite backing."""
+
+
 def sprite_image(filename: str) -> Image.Image | None:
-    """Load sprite bytes once, cached; boss art doubles: size reads threat."""
+    """Load sprite bytes once, cached; art doubles: size reads threat.
+
+    Kitty transmits RGB (alpha arrives as pure black), so art is composited
+    onto the arena void here: the frame blends seamlessly, art stays exact.
+    Doubling to 96px fills the 10x6 widget's fit box with a square paint.
+    """
     if filename not in _sprite_cache:
         path = sprite_path(filename)
         if not path.is_file():
@@ -156,9 +164,9 @@ def sprite_image(filename: str) -> Image.Image | None:
         with Image.open(path) as handle:
             pic = handle.convert("RGBA")
             _ = pic.load()
-        if filename.startswith("boss"):
-            pic = ImageOps.scale(pic, 2, resample=Image.Resampling.NEAREST)
-        _sprite_cache[filename] = pic
+        pic = ImageOps.scale(pic, 2, resample=Image.Resampling.NEAREST)
+        void = Image.new("RGBA", pic.size, (*_ARENA_VOID, 255))
+        _sprite_cache[filename] = Image.alpha_composite(void, pic)
     return _sprite_cache[filename]
 
 
@@ -408,11 +416,11 @@ class ArenaScreen(Screen[None]):
     _CORE_H: ClassVar[int] = 6
     """Kitty core sprite widget height: rows keep the paint transmitting."""
 
-    _PAINT_W: ClassVar[int] = 2
-    """Painted PNG footprint: the kitty row/column trim leaves ~2 cells."""
+    _PAINT_W: ClassVar[int] = 4
+    """Painted PNG footprint: 2x art in a 10x6 widget fits a square 4x2."""
 
     _PAINT_H: ClassVar[int] = 2
-    """Painted PNG height: a 48px sprite covers ~2 cells at terminal pixels."""
+    """Painted PNG height: a 96px sprite covers ~2 cells at terminal pixels."""
 
     _BOSS_PAINT_W: ClassVar[int] = 4
     """Boss paint width: doubled art covers ~4 cells (same 2-cell height)."""
@@ -424,7 +432,7 @@ class ArenaScreen(Screen[None]):
         "#stage { height: 1fr; }\n"
         "#field { width: 1fr; height: 1fr; }\n"
         ".foe-sprite { position: absolute; width: 10; height: 6; }\n"
-        "#core-sprite { position: absolute; width: 12; height: 6; }\n"
+        "#core-sprite { position: absolute; width: 10; height: 6; }\n"
         ".foe-chip { position: absolute; width: auto; height: 1; }\n"
         "#bossbanner { width: 1fr; height: 2; color: #FF2A2A; "
         "text-style: bold; text-align: center; }\n"
@@ -505,6 +513,9 @@ class ArenaScreen(Screen[None]):
         ]
         self._pick: RendererPick = probe_renderer()
         self._ring_seated: bool = False
+        self._pre_mount_ids: frozenset[EnemyId] = frozenset(
+            foe.id for foe in state.enemies
+        )
         self._last_wave: int = state.wave
         self._advance_until: float = 0.0
         self._drift_until: float = 0.0
@@ -758,8 +769,8 @@ class ArenaScreen(Screen[None]):
         except Exception as exc:  # noqa: BLE001 - panic path catches everything
             self._crash(exc)
 
-    def _spawn_distance(self) -> float:
-        """Ring distance: the visible field edge, never below the level floor."""
+    def _edge_floor(self, angle: float) -> float:
+        """Per-angle spawn floor: level radius, lifted to the field edge."""
         if not self.is_mounted:
             return spawn_radius_for_level(self._arena.wave)
         stage = self.query_one("#stage", Vertical)
@@ -767,21 +778,26 @@ class ArenaScreen(Screen[None]):
         height = stage.content_size.height
         if width <= 0 or height <= 0:
             return spawn_radius_for_level(self._arena.wave)
-        edge = edge_spawn_distance(width=width, height=height)
+        edge = edge_spawn_distance(angle=angle, width=width, height=height)
         return max(spawn_radius_for_level(self._arena.wave), edge)
 
     def _seat_initial_ring(self) -> None:
-        """Push pre-layout foes out to the live edge (one-shot, distance only)."""
+        """Push pre-layout foes out to their live per-angle edge (one-shot).
+
+        Only foes dealt before mount move: explicitly placed foes (tests,
+        restored runs) keep their exact distance.
+        """
         if self._ring_seated:
             return
         stage = self.query_one("#stage", Vertical)
         if stage.content_size.width <= 0 or stage.content_size.height <= 0:
             return
-        target = self._spawn_distance()
         self._arena = replace(
             self._arena,
             enemies=tuple(
-                replace(foe, distance=max(foe.distance, target))
+                replace(foe, distance=max(foe.distance, self._edge_floor(foe.angle)))
+                if foe.id in self._pre_mount_ids
+                else foe
                 for foe in self._arena.enemies
             ),
         )
@@ -860,9 +876,20 @@ class ArenaScreen(Screen[None]):
                 Word(text=WordText(text), tier=Tier.T3),
                 kind=EnemyKind.BOSS,
                 hp_words=bars,
-                distance=self._spawn_distance(),
+                distance=spawn_radius_for_level(self._arena.wave),
             )
             self._arena = self._place_last(self._arena)
+            boss = self._arena.enemies[-1]
+            self._arena = replace(
+                self._arena,
+                enemies=(
+                    *self._arena.enemies[:-1],
+                    replace(
+                        boss,
+                        distance=max(boss.distance, self._edge_floor(boss.angle)),
+                    ),
+                ),
+            )
             now = time.monotonic()
             self._boss_banner_until = now + self._BOSS_BANNER_S
             self._juice = replace(self._juice, trauma=1.0)
@@ -908,13 +935,15 @@ class ArenaScreen(Screen[None]):
             start_angle=self._deal_angle(),
             kind=kind,
         )
-        floor = self._spawn_distance()
         self._arena = replace(
             self._arena,
             enemies=tuple(
                 foe
                 if index < before
-                else replace(foe, distance=max(foe.distance, floor))
+                else replace(
+                    foe,
+                    distance=max(foe.distance, self._edge_floor(foe.angle)),
+                )
                 for index, foe in enumerate(self._arena.enemies)
             ),
         )
@@ -1097,7 +1126,6 @@ class ArenaScreen(Screen[None]):
         now = time.monotonic()
         overlay = juice_overlay(self._juice, now)
         frame_tick = int(self._run_clock * BOB_FPS)
-        compact = self.size.width < COMPACT_WIDTH
         hit = foe_hit_showing(self._juice, now)
         accuracy = tally_accuracy(self._tally)
         rail = hud_top_rail(
@@ -1125,7 +1153,6 @@ class ArenaScreen(Screen[None]):
             frame_tick,
             now,
             self._drift_scroll(now),
-            compact=compact,
             shake=overlay.shake,
             hit=hit,
         )
@@ -1267,13 +1294,12 @@ class ArenaScreen(Screen[None]):
         if widget.image is not pic:
             widget.image = pic
 
-    def _refresh_stage(  # noqa: PLR0913 - stage rebind needs the render context
+    def _refresh_stage(
         self,
         frame_tick: int,
         now: float,
         scroll: int,
         *,
-        compact: bool,
         shake: int,
         hit: bool,
     ) -> None:
@@ -1304,7 +1330,6 @@ class ArenaScreen(Screen[None]):
                 frame_tick,
                 now,
                 scroll,
-                compact=compact,
                 shake=shake,
                 hit=hit,
             )
@@ -1328,7 +1353,6 @@ class ArenaScreen(Screen[None]):
                 width=width,
                 height=height,
                 scroll=scroll,
-                compact=compact,
             )
             x = min(max(x + shake, 0), width - 1)
             portal = now - self._spawned_at.get(foe.id, 0.0) < self._PORTAL_S
@@ -1379,7 +1403,6 @@ class ArenaScreen(Screen[None]):
         now: float,
         scroll: int,
         *,
-        compact: bool,
         shake: int,
         hit: bool,
     ) -> None:
@@ -1422,7 +1445,6 @@ class ArenaScreen(Screen[None]):
                 width=width,
                 height=stage.content_size.height,
                 scroll=scroll,
-                compact=compact,
             )
             x = min(max(x + shake, 0), width - 1)
             if foe.kind is EnemyKind.BOSS:
