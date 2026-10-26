@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import contextlib
 import os
-import random
 import shutil
 import subprocess
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
+
+import pygame
 
 from tsurv.visuals import ASSETS_DIR
 
@@ -28,9 +30,24 @@ _PLAYERS: Final = ("afplay", "aplay", "paplay", "pw-play")
 _PIN_ENV: Final = "TSURV_AUDIO"
 """TSURV_AUDIO=1 forces audio on, =0 forces it off (hermetic tests)."""
 
-_pygame_initialized: bool = False
-_sound_cache: dict[str, object] = {}
-_click_index: int = 0
+_SAMPLE_RATE: Final = 44100
+_AUDIO_CHANNELS: Final = 2
+_BUFFER_SIZE: Final = 512
+_CLICK_VARIANTS: Final = 5
+_MUSIC_DEFAULT_VOL: Final = 0.75
+_MUSIC_DUCK_VOL: Final = 0.35
+
+
+@dataclass(slots=True)
+class _MixerState:
+    """Internal mutable audio state encapsulated without global statements."""
+
+    initialized: bool = False
+    click_index: int = 0
+    sound_cache: dict[str, pygame.mixer.Sound] = field(default_factory=dict)
+
+
+_STATE: Final = _MixerState()
 
 
 class Sound(StrEnum):
@@ -62,39 +79,27 @@ class MusicTrack(StrEnum):
 
 def sound_file(sound: Sound) -> Path:
     """Resolve a sound to its audio asset (exhaustive: no silent unknowns)."""
-    match sound:
-        case Sound.AMBIENT:
-            return AUDIO_DIR / "ambient.wav"
-        case Sound.KILL:
-            return AUDIO_DIR / "kill.wav"
-        case Sound.BOSS:
-            return AUDIO_DIR / "boss.wav"
-        case Sound.CLICK:
-            global _click_index
-            _click_index = (_click_index + 1) % 5 + 1
-            path = SFX_DIR / f"click_{_click_index}.wav"
-            return path if path.is_file() else AUDIO_DIR / "kill.wav"
-        case Sound.WORD_POP:
-            path = SFX_DIR / "word_pop.wav"
-            return path if path.is_file() else AUDIO_DIR / "kill.wav"
-        case Sound.TYPO_JAM:
-            path = SFX_DIR / "typo_jam.wav"
-            return path if path.is_file() else AUDIO_DIR / "kill.wav"
-        case Sound.BACKSPACE:
-            path = SFX_DIR / "backspace_reset.wav"
-            return path if path.is_file() else AUDIO_DIR / "kill.wav"
-        case Sound.BOSS_BAR_BREAK:
-            path = SFX_DIR / "boss_bar_break.wav"
-            return path if path.is_file() else AUDIO_DIR / "boss.wav"
-        case Sound.BLOOD_SPLATTER:
-            path = SFX_DIR / "blood_splatter.wav"
-            return path if path.is_file() else AUDIO_DIR / "kill.wav"
-        case Sound.WAVE_CLEAR:
-            path = SFX_DIR / "wave_clear.wav"
-            return path if path.is_file() else AUDIO_DIR / "kill.wav"
-        case Sound.NOVA:
-            path = SFX_DIR / "nova.wav"
-            return path if path.is_file() else AUDIO_DIR / "boss.wav"
+    if sound is Sound.CLICK:
+        _STATE.click_index = (_STATE.click_index + 1) % _CLICK_VARIANTS + 1
+        path = SFX_DIR / f"click_{_STATE.click_index}.wav"
+        return path if path.is_file() else AUDIO_DIR / "kill.wav"
+
+    sfx_paths: dict[Sound, Path] = {
+        Sound.AMBIENT: AUDIO_DIR / "ambient.wav",
+        Sound.KILL: AUDIO_DIR / "kill.wav",
+        Sound.BOSS: AUDIO_DIR / "boss.wav",
+        Sound.WORD_POP: SFX_DIR / "word_pop.wav",
+        Sound.TYPO_JAM: SFX_DIR / "typo_jam.wav",
+        Sound.BACKSPACE: SFX_DIR / "backspace_reset.wav",
+        Sound.BOSS_BAR_BREAK: SFX_DIR / "boss_bar_break.wav",
+        Sound.BLOOD_SPLATTER: SFX_DIR / "blood_splatter.wav",
+        Sound.WAVE_CLEAR: SFX_DIR / "wave_clear.wav",
+        Sound.NOVA: SFX_DIR / "nova.wav",
+    }
+    candidate = sfx_paths.get(sound)
+    if candidate is not None and candidate.is_file():
+        return candidate
+    return AUDIO_DIR / ("boss.wav" if sound is Sound.BOSS_BAR_BREAK else "kill.wav")
 
 
 def music_file(track: MusicTrack) -> Path | None:
@@ -118,17 +123,21 @@ class AudioConfig:
 
 def _init_pygame() -> bool:
     """Initialize pygame mixer once safely; returns True on success."""
-    global _pygame_initialized
-    if _pygame_initialized:
+    if _STATE.initialized:
         return True
     try:
-        import pygame
         if not pygame.mixer.get_init():
-            pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
-        _pygame_initialized = True
-        return True
-    except Exception:
+            pygame.mixer.init(
+                frequency=_SAMPLE_RATE,
+                size=-16,
+                channels=_AUDIO_CHANNELS,
+                buffer=_BUFFER_SIZE,
+            )
+        _STATE.initialized = True
+    except (pygame.error, OSError):
         return False
+    else:
+        return True
 
 
 def find_player() -> str | None:
@@ -153,7 +162,7 @@ def default_enabled() -> bool:
 def _run(player: str, path: Path) -> None:
     """Play one file via subprocess fallback, swallowing failures."""
     with contextlib.suppress(OSError):
-        _ = subprocess.run(
+        _ = subprocess.run(  # noqa: S603 - probed platform binary
             [player, str(path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -171,19 +180,18 @@ def play_event(config: AudioConfig, sound: Sound) -> None:
     # Fast path: pygame mixer
     if _init_pygame():
         try:
-            import pygame
             str_path = str(path)
-            if str_path not in _sound_cache:
-                _sound_cache[str_path] = pygame.mixer.Sound(str_path)
-            snd = _sound_cache[str_path]
+            if str_path not in _STATE.sound_cache:
+                _STATE.sound_cache[str_path] = pygame.mixer.Sound(str_path)
+            snd = _STATE.sound_cache[str_path]
             # Duck music on heavy impacts
             if sound in (Sound.BOSS_BAR_BREAK, Sound.NOVA):
                 duck_music(0.3)
-            if isinstance(snd, pygame.mixer.Sound):
-                _ = snd.play()
-            return
-        except Exception:
+            _ = snd.play()
+        except (pygame.error, OSError):
             pass
+        else:
+            return
 
     # Subprocess fallback
     thread = threading.Thread(
@@ -199,42 +207,32 @@ def play_music_track(track: MusicTrack, *, loop: bool = True) -> None:
     path = music_file(track)
     if path is None or not _init_pygame():
         return
-    try:
-        import pygame
+    with contextlib.suppress(pygame.error, OSError):
         pygame.mixer.music.load(str(path))
-        pygame.mixer.music.set_volume(0.75)
+        pygame.mixer.music.set_volume(_MUSIC_DEFAULT_VOL)
         pygame.mixer.music.play(-1 if loop else 0)
-    except Exception:
-        pass
 
 
 def stop_music_track() -> None:
     """Stop the currently playing background music track."""
-    if _pygame_initialized:
-        try:
-            import pygame
+    if _STATE.initialized:
+        with contextlib.suppress(pygame.error, OSError):
             pygame.mixer.music.stop()
-        except Exception:
-            pass
 
 
 def duck_music(duration_s: float = 0.25) -> None:
     """Briefly dip the music volume for heavy impacts to cut through the mix."""
-    if not _pygame_initialized:
+    if not _STATE.initialized:
         return
-    try:
-        import pygame
-        pygame.mixer.music.set_volume(0.35)
+    with contextlib.suppress(pygame.error, OSError):
+        pygame.mixer.music.set_volume(_MUSIC_DUCK_VOL)
 
         def _restore() -> None:
-            import time
             time.sleep(duration_s)
-            with contextlib.suppress(Exception):
-                pygame.mixer.music.set_volume(0.75)
+            with contextlib.suppress(pygame.error, OSError):
+                pygame.mixer.music.set_volume(_MUSIC_DEFAULT_VOL)
 
         threading.Thread(target=_restore, daemon=True).start()
-    except Exception:
-        pass
 
 
 def start_ambient(
@@ -251,7 +249,7 @@ def start_ambient(
             if not enabled():
                 break
             with contextlib.suppress(OSError):
-                _ = subprocess.run(
+                _ = subprocess.run(  # noqa: S603 - probed platform binary
                     [player, str(AUDIO_DIR / "ambient.wav")],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,

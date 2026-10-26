@@ -143,6 +143,108 @@ class JuiceOverlay:
     slow: bool
 
 
+_MIN_RUNIC_W: Final = 20
+_MIN_RUNIC_H: Final = 10
+_MIN_BRAZIER_W: Final = 30
+_MIN_BRAZIER_H: Final = 12
+_FLAME_ANIM_HALF_PERIOD: Final = 2
+
+
+@dataclass(frozen=True, slots=True)
+class BloodSplatter:
+    """One persistent floor decal left behind by a fallen foe."""
+
+    x: int
+    y: int
+    glyph: str
+    color: str
+    expires_at: float
+
+
+def runic_floor_layer(
+    *,
+    width: int,
+    height: int,
+    cx: int,
+    cy: int,
+    mono: bool,
+) -> tuple[FieldSprite, ...]:
+    """Ornate runic circle around the core, low-contrast so words stay readable."""
+    if width < _MIN_RUNIC_W or height < _MIN_RUNIC_H:
+        return ()
+    sprites: list[FieldSprite] = []
+    r_x = max(min(width // 4, 12), 4)
+    r_y = max(min(height // 4, 5), 2)
+    style = "" if mono else "#232338"
+    for deg in range(0, 360, 20):
+        rad = deg * 0.0174532925
+        px = cx + round(cos(rad) * r_x)
+        py = cy + round(cos(rad) * r_y)
+        if 0 <= px < width and 0 <= py < height:
+            glyph = "✦" if deg % 60 == 0 else "·"
+            chip = Text(glyph, style=style)
+            sprites.append(
+                FieldSprite(
+                    x=0,
+                    y=0,
+                    art=(),
+                    color=None,
+                    chip=chip,
+                    chip_x=px,
+                    chip_y=py,
+                ),
+            )
+    return tuple(sprites)
+
+
+def braziers_layer(
+    *,
+    width: int,
+    height: int,
+    tick: int,
+    mono: bool,
+) -> tuple[FieldSprite, ...]:
+    """Four flickering corner braziers anchoring the arena boundaries."""
+    if width < _MIN_BRAZIER_W or height < _MIN_BRAZIER_H:
+        return ()
+    sprites: list[FieldSprite] = []
+    flame_glyph = "▲" if tick % 4 < _FLAME_ANIM_HALF_PERIOD else "*"
+    flame_style = "" if mono else "#FF7A00 bold"
+    base_style = "" if mono else "#555577"
+    corners = (
+        (3, 2),
+        (max(width - 4, 0), 2),
+        (3, max(height - 3, 0)),
+        (max(width - 4, 0), max(height - 3, 0)),
+    )
+    for bx, by in corners:
+        flame_chip = Text(flame_glyph, style=flame_style)
+        base_chip = Text("╩", style=base_style)
+        sprites.append(
+            FieldSprite(
+                x=0,
+                y=0,
+                art=(),
+                color=None,
+                chip=flame_chip,
+                chip_x=bx,
+                chip_y=by,
+            ),
+        )
+        sprites.append(
+            FieldSprite(
+                x=0,
+                y=0,
+                art=(),
+                color=None,
+                chip=base_chip,
+                chip_x=bx,
+                chip_y=by + 1,
+            ),
+        )
+    return tuple(sprites)
+
+
 def foe_sprite_file(kind: EnemyKind, *, hit: bool, tick: int) -> str:
     """PNG filename for a foe: hit-flash on damage, else idle/bob per tick.
 

@@ -117,11 +117,13 @@ from tsurv.stage import (
 from tsurv.visuals import (
     BOB_FPS,
     HUB_ENTRIES,
+    BloodSplatter,
     HubEntry,
     agitated,
     agitated_mark,
     ambient_line,
     boss_portal_mark,
+    braziers_layer,
     core_sprite_file,
     foe_hit_showing,
     foe_sprite_file,
@@ -133,6 +135,7 @@ from tsurv.visuals import (
     marker,
     particle_layer,
     portal_mark,
+    runic_floor_layer,
     shop_row_text,
     sprite_path,
 )
@@ -236,6 +239,10 @@ WAVE_SECONDS: Final = 30.0
 
 BOSS_EVERY: Final = 5
 """Boss wave cadence (boss waves end on kill, not on the clock)."""
+
+_AIM_HINT_MONO: Final = (
+    "[AIM] TYPE INITIAL LETTER TO LOCK TARGET  •  [BACKSPACE] RESET AIM"
+)
 
 _SAMPLE_WINDOW_S: Final = 60.0
 """Trailing press history feeding the consistency gate (idle never counts)."""
@@ -539,6 +546,7 @@ class ArenaScreen(Screen[None]):
         self._pause_help: bool = False
         self._audio_player: str | None = None
         self._stop_ambient: Callable[[], None] | None = None
+        self._blood_decals: list[BloodSplatter] = []
 
     @property
     def arena_state(self) -> ArenaState:
@@ -887,6 +895,18 @@ class ArenaScreen(Screen[None]):
             self._tally = self._tally.add_missed(leaked_untyped(before_leak, leaked))
             self._refresh()
             return
+        self._advance_wave(dt)
+        if self._spawn_enabled:
+            self._clock += dt
+            gap = spawn_interval(REF_WPM, rolling_wpm(self._kill_times, now))
+            gap *= mercy_spawn_factor(self._arena.mercy)
+            if self._clock >= gap and len(self._arena.enemies) < MAX_FOES:
+                self._clock = 0.0
+                self._spawn_foe()
+        self._refresh()
+
+    def _advance_wave(self, dt: float) -> None:
+        """Advance wave clocks, trigger boss clear rewards and tier music."""
         self._wave_clock += dt
         if self._arena.boss_wave:
             if boss_cleared(self._arena):
@@ -897,22 +917,17 @@ class ArenaScreen(Screen[None]):
                 self._wave_clock = 0.0
                 play_event(self._audio_config(), Sound.WAVE_CLEAR)
                 if self._audio_enabled():
-                    play_music_track(
-                        MusicTrack.TIER_2 if self._arena.wave >= 6 else MusicTrack.TIER_1,
+                    track = (
+                        MusicTrack.TIER_2
+                        if self._arena.wave >= BOSS_EVERY
+                        else MusicTrack.TIER_1
                     )
+                    play_music_track(track)
         elif self._wave_clock >= WAVE_SECONDS:
             self._arena = replace(self._arena, wave=self._arena.wave + 1)
             self._wave_clock = 0.0
             play_event(self._audio_config(), Sound.WAVE_CLEAR)
             self._calibrate_wave()
-        if self._spawn_enabled:
-            self._clock += dt
-            gap = spawn_interval(REF_WPM, rolling_wpm(self._kill_times, now))
-            gap *= mercy_spawn_factor(self._arena.mercy)
-            if self._clock >= gap and len(self._arena.enemies) < MAX_FOES:
-                self._clock = 0.0
-                self._spawn_foe()
-        self._refresh()
 
     def _tick(self) -> None:
         """60fps interval callback (thin wrapper so tests drive tick)."""
@@ -1014,28 +1029,68 @@ class ArenaScreen(Screen[None]):
             self._spawned_total += 1
             self._spawned_at[foe.id] = now
 
-    async def on_key(self, event: events.Key) -> None:
-        """Type-to-target: printable chars feed the arena, P pauses."""
-        ch = event.character
+    def _handle_nav_key(self, event: events.Key) -> bool:
+        """Handle escape, backspace, and pause enter navigation keys."""
         if event.key == "escape":
             if self.paused:
                 self.paused = False
                 self._pause_help = False
-                self._refresh()
-                return
-            self._arena = reset_word(self._arena)
+            else:
+                self._arena = reset_word(self._arena)
             self._refresh()
-            return
+            return True
         if event.key in ("backspace", "delete"):
             if not self.paused:
                 self._arena = reset_word(self._arena)
                 play_event(self._audio_config(), Sound.BACKSPACE)
                 self._refresh()
-            return
+            return True
         if event.key == "enter" and self.paused:
             self._activate_selected()
             self._refresh()
+            return True
+        return False
+
+    def _spawn_kill_blood(
+        self,
+        before: ArenaState,
+        target: EnemyId,
+        now: float,
+    ) -> None:
+        """Scatter floor blood splatters at the site of a vanquished foe."""
+        if not self.is_mounted:
             return
+        target_foe = next((f for f in before.enemies if f.id == target), None)
+        if target_foe is None:
+            return
+        stage = self.query_one("#stage", Vertical)
+        sw, sh = stage.content_size.width, stage.content_size.height
+        if sw <= 0 or sh <= 0:
+            return
+        kx, ky = canvas_xy(
+            angle=target_foe.angle,
+            distance=target_foe.distance,
+            width=sw,
+            height=sh,
+        )
+        for _ in range(4):
+            sx = min(max(kx + self._rng.randint(-2, 2), 0), sw - 1)
+            sy = min(max(ky + self._rng.randint(-1, 1), 0), sh - 1)
+            self._blood_decals.append(
+                BloodSplatter(
+                    x=sx,
+                    y=sy,
+                    glyph=self._rng.choice(("·", "▪", "•", "░")),
+                    color=self._rng.choice(("#881111", "#AA2222", "#660000")),
+                    expires_at=now + 8.0,
+                ),
+            )
+
+    async def on_key(self, event: events.Key) -> None:
+        """Type-to-target: printable chars feed the arena, P pauses."""
+        if self._handle_nav_key(event):
+            return
+        ch = event.character
         if ch is None or self._handle_command_key(ch):
             return
         if is_narrow(self.size.width):
@@ -1059,6 +1114,7 @@ class ArenaScreen(Screen[None]):
             play_event(self._audio_config(), Sound.WORD_POP)
             self._resolve_drop(before, outcome.target)
             self._juice_hit(before, outcome, now)
+            self._spawn_kill_blood(before, outcome.target, now)
         elif isinstance(outcome, Advanced):
             play_event(self._audio_config(), Sound.CLICK)
         elif isinstance(outcome, TypoStun):
@@ -1239,18 +1295,11 @@ class ArenaScreen(Screen[None]):
         )
         self.query_one("#fx", Label).update(Text(ribbon))
         self._refresh_boss_bars()
-        if state.current is None:
-            self.query_one("#typing", Label).update(Text(""))
-        else:
-            foe = next(
-                (item for item in state.enemies if item.id == state.current),
-                None,
-            )
-            raw = str(foe.word.text) if foe is not None else ""
-            self.query_one("#typing", Label).update(Text(raw[: state.typed]))
+        self._refresh_typing()
         stunned = now < state.stunned_until
         stun = self.query_one("#stun", Label)
-        stun.update(Text("JAMMED" if stunned else ""))
+        stun_msg = "⚠ JAMMED — PRESS BACKSPACE TO CLEAR" if stunned else ""
+        stun.update(Text(stun_msg, style="" if self.mono else "bold #FFD23F"))
         stun.display = stunned
         death = self.query_one("#death", Label)
         dead = state.hp <= 0.0
@@ -1259,14 +1308,66 @@ class ArenaScreen(Screen[None]):
         death.display = dead
         self._refresh_pause()
 
+    def _refresh_typing(self) -> None:
+        """Update the typing input dock or rune deck target display."""
+        state = self._arena
+        if state.current is None:
+            typing_text = Text()
+            if self.mono:
+                _ = typing_text.append(_AIM_HINT_MONO)
+            else:
+                _ = typing_text.append(" ⚔ ", style="#952CF5 bold")
+                _ = typing_text.append(
+                    "[AIM] TYPE INITIAL LETTER TO LOCK TARGET",
+                    style="#8888AA",
+                )
+                _ = typing_text.append("  •  ", style="#555577")
+                _ = typing_text.append("[BACKSPACE] RESET AIM", style="#666688")
+            self.query_one("#typing", Label).update(typing_text)
+            return
+        foe = next(
+            (item for item in state.enemies if item.id == state.current),
+            None,
+        )
+        if foe is None:
+            self.query_one("#typing", Label).update(Text(""))
+            return
+        self.query_one("#typing", Label).update(
+            self._format_locked_typing(foe, str(foe.word.text), state.typed),
+        )
+
+    def _format_locked_typing(
+        self,
+        foe: ArenaEnemy,
+        raw: str,
+        typed: int,
+    ) -> Text:
+        """Render the rune deck bar with typed prefix, gold next char, and foe info."""
+        deck = Text()
+        if self.mono:
+            stat = f"({foe.distance:.1f}m)  [BKSP: reset]"
+            _ = deck.append(f"[{foe.kind.name}] {raw[:typed]} | {raw[typed:]}  {stat}")
+            return deck
+        _ = deck.append(" ⚔ LOCKED ", style="#FF2A2A bold")
+        _ = deck.append(f"[{foe.kind.name}] ", style="#FFD23F bold")
+        _ = deck.append(raw[:typed], style="bold #00FF66")
+        _ = deck.append(raw[typed : typed + 1], style="bold underline #FFD23F")
+        _ = deck.append(raw[typed + 1 :], style="#EAEAEA")
+        _ = deck.append(f"  •  dist: {foe.distance:.1f}m", style="#8888AA")
+        _ = deck.append("  •  [BACKSPACE] RESET", style="#FF7A00")
+        return deck
+
     def _refresh_pause(self) -> None:
         """Paint the pause overlay while paused (hidden otherwise)."""
         panel = self.query_one("#pause", Label)
         panel.display = self.paused
         if not self.paused:
             return
-        hint = "PAUSED — R resume · H help · E settings · S suspend · Q quit\n"
-        menu = Text(hint)
+        hint = (
+            "╔══ ⚔ SANCTUARY SUSPENDED ⚔ ══╗\n"
+            "PAUSED — R resume · H help · E settings · S suspend · Q quit\n"
+        )
+        menu = Text(hint, style="" if self.mono else "bold #FFD23F")
         _ = menu.append_text(
             hub_list_text(PAUSE_ENTRIES, self._pause_selected, mono=self.mono),
         )
@@ -1408,7 +1509,38 @@ class ArenaScreen(Screen[None]):
                 hit=hit,
             )
             return
+        self._blood_decals = [d for d in self._blood_decals if d.expires_at > now]
         sprites: list[FieldSprite] = []
+        sprites.extend(
+            runic_floor_layer(
+                width=width,
+                height=height,
+                cx=cx,
+                cy=cy,
+                mono=self.mono,
+            ),
+        )
+        sprites.extend(
+            braziers_layer(
+                width=width,
+                height=height,
+                tick=frame_tick,
+                mono=self.mono,
+            ),
+        )
+        sprites.extend(
+            FieldSprite(
+                x=0,
+                y=0,
+                art=(),
+                color=None,
+                chip=Text(decal.glyph, style="" if self.mono else decal.color),
+                chip_x=decal.x,
+                chip_y=decal.y,
+            )
+            for decal in self._blood_decals
+            if 0 <= decal.x < width and 0 <= decal.y < height
+        )
         core_art = CORE_ART_HIT if low else CORE_ART
         core_x, core_y = art_origin(cx, cy, core_art)
         sprites.append(
@@ -1746,11 +1878,13 @@ class HubScreen(Screen[None]):
         "#hub-banner { width: 1fr; height: 3; color: #FF2A2A; "
         "text-style: bold; text-align: center; content-align: center middle; }\n"
         "#subtitle { width: 1fr; height: 1; color: #B57CFF; text-align: center; }\n"
-        "#hub-header { width: 80%; height: 4; border: solid #952CF5; background: #12121e; }\n"
+        "#hub-header { width: 80%; height: 4; border: solid #952CF5; "
+        "background: #12121e; }\n"
         "#gold { width: 1fr; height: 1; color: #FFD23F; text-style: bold; "
         "text-align: center; }\n"
         "#hub-greeting { width: 1fr; height: 1; color: #CACACA; text-align: center; }\n"
-        "#hub-panel { width: 80%; height: 9; border: solid #952CF5; background: #12121e; }\n"
+        "#hub-panel { width: 80%; height: 9; border: solid #952CF5; "
+        "background: #12121e; }\n"
         "#hub-list { width: 1fr; height: 6; content-align: center middle; }\n"
         "#hub-message { width: 1fr; height: 1; color: #FFD23F; text-align: center; }\n"
         "#hub-stats { width: 1fr; height: 1; color: #FFD23F; text-align: center; }\n"
@@ -1787,20 +1921,18 @@ class HubScreen(Screen[None]):
             )
             yield Label(hub_banner_text(mono=not colors_enabled()), id="hub-banner")
             yield Label(TAGLINE, id="subtitle")
-            with Center():
-                with Vertical(id="hub-header"):
-                    yield Label(f"gold {self._app_ref.profile.gold}", id="gold")
-                    yield Label(
-                        hub_greeting(
-                            gold=self._app_ref.profile.gold,
-                            runs=len(self._app_ref.profile.runs),
-                        ),
-                        id="hub-greeting",
-                    )
-            with Center():
-                with Vertical(id="hub-panel"):
-                    yield Label("", id="hub-list")
-                    yield Label("", id="hub-message")
+            with Center(), Vertical(id="hub-header"):
+                yield Label(f"gold {self._app_ref.profile.gold}", id="gold")
+                yield Label(
+                    hub_greeting(
+                        gold=self._app_ref.profile.gold,
+                        runs=len(self._app_ref.profile.runs),
+                    ),
+                    id="hub-greeting",
+                )
+            with Center(), Vertical(id="hub-panel"):
+                yield Label("", id="hub-list")
+                yield Label("", id="hub-message")
             yield Label(hub_footer(self._app_ref.profile), id="hub-stats")
 
     def on_mount(self) -> None:
