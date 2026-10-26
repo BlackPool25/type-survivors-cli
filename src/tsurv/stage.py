@@ -18,6 +18,7 @@ from enum import StrEnum
 from math import cos, sin
 from typing import TYPE_CHECKING, Final, override
 
+from par_textual_image import detect_protocol
 from rich.text import Text
 from textual.widget import Widget
 
@@ -92,7 +93,25 @@ class RendererPick:
         return f"pixels: {self.kind.value} ({self.reason})"
 
 
-def select_renderer(
+def _env_hint(
+    term_program: str,
+    term: str,
+    wt_session: str | None,
+    lc_terminal: str,
+) -> tuple[RendererKind, str] | None:
+    """Unpinned-env guess: kitty allowlist, WT sixel, iTerm2, else None."""
+    hay = f"{term_program} {term}".lower()
+    token = next((name for name in _GRAPHIC_TERMS if name in hay), None)
+    if token is not None:
+        return RendererKind.KITTY, token
+    if wt_session or "windows_terminal" in hay or "windows terminal" in hay:
+        return RendererKind.SIXEL, "wt-session"
+    if "iterm" in f"{term_program} {lc_terminal}".lower():
+        return RendererKind.ITERM2, "iterm2-env"
+    return None
+
+
+def select_renderer(  # noqa: PLR0913 - seven env-sourced pins, all kw-only
     *,
     truepixel: str | None = None,
     par_graphics: str | None = None,
@@ -122,17 +141,13 @@ def select_renderer(
     elif par_graphics == "halfblock":
         kind, reason = RendererKind.CELLS, f"{_PAR_ENV}=halfblock"
     else:
-        kind, reason = RendererKind.CELLS, _UNKNOWN_REASON
-        hay = f"{term_program} {term}".lower()
-        token = next((name for name in _GRAPHIC_TERMS if name in hay), None)
-        if token is not None:
-            kind, reason = RendererKind.KITTY, token
-        elif wt_session or "windows_terminal" in hay or "windows terminal" in hay:
-            kind, reason = RendererKind.SIXEL, "wt-session"
-        elif "iterm" in f"{term_program} {lc_terminal}".lower():
-            kind, reason = RendererKind.ITERM2, "iterm2-env"
+        hint = _env_hint(term_program, term, wt_session, lc_terminal)
+        if hint is not None:
+            kind, reason = hint
         elif tty_kitty:
             kind, reason = RendererKind.KITTY, "tty-query"
+        else:
+            kind, reason = RendererKind.CELLS, _UNKNOWN_REASON
     return RendererPick(kind, reason)
 
 
@@ -184,7 +199,7 @@ def probe_renderer(
     env: Mapping[str, str] | None = None,
     *,
     query_tty: Callable[[], bool] = query_kitty_graphics,
-    detect: Callable[[], str] | None = None,
+    detect: Callable[[], str] = detect_protocol,
 ) -> RendererPick:
     """Startup probe: env pins first, then lib auto-detect, then cells."""
     live = os.environ if env is None else env
@@ -198,21 +213,14 @@ def probe_renderer(
     )
     if pick.kind.true_pixel or pick.reason != _UNKNOWN_REASON:
         return pick
-    if detect is None:
-        try:
-            from par_textual_image import detect_protocol as _detect
-        except ImportError:
-            _detect = None  # type: ignore[assignment]
-        detect = _detect  # type: ignore[assignment]
-    if detect is not None:
-        with contextlib.suppress(Exception):
-            found = detect()
-            if found == "kitty":
-                return RendererPick(RendererKind.KITTY, "auto-kitty")
-            if found == "sixel":
-                return RendererPick(RendererKind.SIXEL, "auto-sixel")
-            if found == "iterm2":
-                return RendererPick(RendererKind.ITERM2, "auto-iterm2")
+    with contextlib.suppress(Exception):
+        found = detect()
+        if found == "kitty":
+            return RendererPick(RendererKind.KITTY, "auto-kitty")
+        if found == "sixel":
+            return RendererPick(RendererKind.SIXEL, "auto-sixel")
+        if found == "iterm2":
+            return RendererPick(RendererKind.ITERM2, "auto-iterm2")
     if query_tty():
         return RendererPick(RendererKind.KITTY, "tty-query")
     return pick

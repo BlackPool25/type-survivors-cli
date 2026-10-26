@@ -104,6 +104,51 @@ def test_force_wins_over_everything() -> None:
     assert pick.kind is RendererKind.KITTY
 
 
+def test_par_env_sixel_selects_sixel() -> None:
+    """PAR_TERM_GRAPHICS=sixel pins the sixel renderer (Windows Terminal)."""
+    pick = select_renderer(par_graphics="sixel")
+    assert pick.kind is RendererKind.SIXEL
+    assert pick.label == "pixels: sixel (PAR_TERM_GRAPHICS=sixel)"
+
+
+def test_par_env_iterm2_selects_iterm2() -> None:
+    """PAR_TERM_GRAPHICS=iterm2 pins the iTerm2 renderer."""
+    pick = select_renderer(par_graphics="iterm2")
+    assert pick.kind is RendererKind.ITERM2
+
+
+def test_windows_terminal_session_selects_sixel() -> None:
+    """WT_SESSION advertises sixel even when TERM_PROGRAM is stripped."""
+    pick = select_renderer(
+        term_program="tmux",
+        term="screen-256color",
+        wt_session="abc123",
+    )
+    assert pick.kind is RendererKind.SIXEL
+    assert pick.reason == "wt-session"
+
+
+def test_iterm2_env_selects_iterm2() -> None:
+    """LC_TERMINAL=iTerm2 pins the iTerm2 renderer on unknown terms."""
+    pick = select_renderer(
+        term_program="tmux",
+        term="screen-256color",
+        lc_terminal="iTerm2",
+    )
+    assert pick.kind is RendererKind.ITERM2
+
+
+def test_probe_auto_detect_maps_sixel() -> None:
+    """Lib auto-detect of sixel wins before the kitty TTY query."""
+    pick = probe_renderer(
+        {"TERM_PROGRAM": "tmux", "TERM": "screen-256color"},
+        query_tty=lambda: False,
+        detect=lambda: "sixel",
+    )
+    assert pick.kind is RendererKind.SIXEL
+    assert pick.label == "pixels: sixel (auto-sixel)"
+
+
 def test_probe_reads_environ(monkeypatch: pytest.MonkeyPatch) -> None:
     """The startup probe reads the live environment (Ghostty path)."""
     monkeypatch.setenv("TERM_PROGRAM", "ghostty")

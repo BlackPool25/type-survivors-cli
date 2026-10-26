@@ -65,14 +65,22 @@ def test_tty_query_true_selects_kitty() -> None:
 
 def test_probe_consults_tty_query_on_unknown_cells() -> None:
     """Ghostty-behind-tmux answers the query: kitty despite the bare env."""
-    pick = probe_renderer(_UNADVERTISED_ENV, query_tty=lambda: True)
+    pick = probe_renderer(
+        _UNADVERTISED_ENV,
+        query_tty=lambda: True,
+        detect=lambda: "halfblock",
+    )
     assert pick.kind is RendererKind.KITTY
     assert pick.label == "pixels: kitty (tty-query)"
 
 
 def test_probe_query_timeout_stays_cells() -> None:
     """A silent TTY keeps the cells fallback and its honest reason."""
-    pick = probe_renderer(_UNADVERTISED_ENV, query_tty=lambda: False)
+    pick = probe_renderer(
+        _UNADVERTISED_ENV,
+        query_tty=lambda: False,
+        detect=lambda: "halfblock",
+    )
     assert pick.kind is RendererKind.CELLS
     assert pick.label == "pixels: cells (no graphics protocol)"
 
