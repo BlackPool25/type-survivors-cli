@@ -64,8 +64,9 @@ from tsurv.combat import (
     KillSample,
     NoTarget,
     TypoStun,
+    adapt_multiplier,
     service_wpm,
-    spawn_interval,
+    wave_baseline_gap,
 )
 from tsurv.director import (
     compute_strain,
@@ -1010,7 +1011,10 @@ class ArenaScreen(Screen[None]):
             ref = REF_WPM
             if self._app_ref is not None and self._app_ref.profile.base_wpm is not None:
                 ref = self._app_ref.profile.base_wpm
-            gap = spawn_interval(ref, service_wpm(self._kill_samples))
+            gap = wave_baseline_gap(self._arena.wave) * adapt_multiplier(
+                service_wpm(self._kill_samples),
+                ref,
+            )
             gap *= mercy_spawn_factor(self._arena.mercy)
             hp_frac = (
                 self._arena.hp / self._arena.max_hp if self._arena.max_hp > 0 else 0.0

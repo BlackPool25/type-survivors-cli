@@ -244,3 +244,26 @@ def spawn_interval(ref_wpm: float, player_wpm: float) -> float:
     """
     ratio = ref_wpm / player_wpm if player_wpm > 0.0 else SPAWN_CLAMP_MAX
     return BASE_SPAWN_INTERVAL * min(max(ratio, SPAWN_CLAMP_MIN), SPAWN_CLAMP_MAX)
+
+
+WAVE_BASELINE_GAPS: Final = (3.0, 2.7, 2.4, 2.2, 2.0, 1.8, 1.6)
+"""Per-wave base spawn gap: a linear-feeling ramp into a late floor."""
+
+ADAPT_BAND: Final = 0.20
+"""Adaptation bends the wave baseline at most this far either way."""
+
+
+def wave_baseline_gap(wave: int) -> float:
+    """Return the base spawn gap for a wave: eases down, then holds."""
+    index = min(max(wave, 1), len(WAVE_BASELINE_GAPS)) - 1
+    return WAVE_BASELINE_GAPS[index]
+
+
+def adapt_multiplier(player_wpm: float, ref_wpm: float) -> float:
+    """Adaptation leash: ref/player clamped inside the adapt band.
+
+    An idle player (no WPM yet) spawns at the slowest edge, never crashing.
+    The clamp keeps adaptation a bend, never the reason a good run dies.
+    """
+    ratio = ref_wpm / player_wpm if player_wpm > 0.0 else 1.0 + ADAPT_BAND
+    return min(max(ratio, 1.0 - ADAPT_BAND), 1.0 + ADAPT_BAND)

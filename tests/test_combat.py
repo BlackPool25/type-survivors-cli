@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 from tsurv.combat import (
+    ADAPT_BAND,
     BASE_SPAWN_INTERVAL,
     ESC,
     SHIELD_DURATION,
@@ -10,6 +13,7 @@ from tsurv.combat import (
     SPAWN_CLAMP_MAX,
     SPAWN_CLAMP_MIN,
     STUN_DURATION,
+    WAVE_BASELINE_GAPS,
     Advanced,
     EnemyId,
     EnemyState,
@@ -18,11 +22,13 @@ from tsurv.combat import (
     KillSample,
     NoTarget,
     TypoStun,
+    adapt_multiplier,
     apply_keystroke,
     keystroke_target,
     lock_target,
     service_wpm,
     spawn_interval,
+    wave_baseline_gap,
 )
 from tsurv.words import Tier, Word, WordText
 
@@ -256,3 +262,27 @@ def test_esc_during_stun_stays_jammed() -> None:
     enemies = (_enemy(0, "cat"),)
     result = apply_keystroke(ESC, enemies, EnemyId(0), 1, 0, 10.2, 10.0 + STUN_DURATION)
     assert result == TypoStun(stun_until=10.0 + STUN_DURATION, streak=0)
+
+
+def test_wave_baseline_eases_down_to_floor() -> None:
+    """Early waves breathe; late waves hold a floor pace."""
+    gaps = [wave_baseline_gap(wave) for wave in range(1, 12)]
+    assert gaps[0] == WAVE_BASELINE_GAPS[0]
+    assert all(later <= earlier for earlier, later in pairwise(gaps))
+    assert gaps[-1] == WAVE_BASELINE_GAPS[-1]
+
+
+def test_wave_baseline_clamps_low_waves() -> None:
+    """Wave 0 (or negative) behaves like wave 1, never faster."""
+    assert wave_baseline_gap(0) == wave_baseline_gap(1)
+
+
+def test_adapt_multiplier_stays_inside_band() -> None:
+    """Adaptation bends the baseline at most twenty percent either way."""
+    fast = 1.0 - ADAPT_BAND
+    slow = 1.0 + ADAPT_BAND
+    assert adapt_multiplier(40.0, 40.0) == 1.0
+    assert adapt_multiplier(400.0, 40.0) == fast
+    assert adapt_multiplier(4.0, 40.0) == slow
+    assert adapt_multiplier(0.0, 40.0) == slow
+    assert fast <= adapt_multiplier(50.0, 40.0) <= slow
