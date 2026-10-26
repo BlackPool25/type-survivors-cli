@@ -4,19 +4,18 @@ Goal: Kalman-tracked skill rating drives spawn pressure; word dealer trains
 weak keys; director states pace waves; wave 1 is fail-soft; rank is visible.
 Decisions: full engine / train weaknesses / visible rank / gentle then adapt.
 
-## Slices (each: RED test → implement → full suite → ruff)
-1. Honest speedometer (combat.py): per-kill service-time WPM replaces
-   completions/min; spawn_interval takes chars-based WPM; close base_wpm loop.
-2. Skill rating (new rating.py): rating + RD (Glicko-lite); update on
-   kill-clean vs leak; visible rank tiers for hub/report.
-3. Word dealer (words.py): word difficulty = length + weak-key overlap;
-   deal near ability; weak keys served at low pressure (train), spared at
-   high pressure; T1-short-only wave-1 rails.
-4. Director (arena.py/app.py): stress signal (queue depth + HP trend);
-   Build/Peak/Relax FSM; authored wave event tables incl. HEX/ELITE/CODE
-   debuts; bosses exempt; frost_until actually slows advance (shop honesty).
-5. Rank + anti-sandbag (app.py/report): visible rank display; score scales
-   with pressure faced so playing down pays less.
+## Slices (all built; each: RED test → implement → full suite → ruff)
+1. [x] Honest speedometer: per-kill service-time WPM; spawn gap takes
+   chars-based pace; base_wpm seeds the tick reference.
+2. [x] Skill rating (new rating.py): rating + RD (Glicko-lite); one update
+   per banked run via bank_run_skill; rank tiers for the hub.
+3. [x] Word dealer: difficulty = length + surcharges; deal near ability;
+   weak keys served at low strain, spared at high; wave-1 short-only rails.
+4. [x] Director: strain FSM (Build/Peak/Relax); HEX/ELITE debut waves;
+   bosses exempt; frost slows advance. CODE tier undebuted (deferred).
+5. [x] Rank persistence: skill fields on Profile; bank_run folds run pace;
+   run start capped at GENTLE_START_WPM; hub footer shows rank.
+   Deferred: score scaling with pressure faced (anti-sandbag pay curve).
 
 ## Constraints
 - No new deps (stdlib; user lifted the cap but nothing needs it).
