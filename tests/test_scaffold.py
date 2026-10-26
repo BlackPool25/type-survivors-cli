@@ -12,7 +12,7 @@ _EMBLEM_MD5: str = "a280036dec31fee2a913db4e13fa04e7"
 
 def test_package_imports() -> None:
     """The tsurv package imports and exposes the expected version."""
-    assert tsurv.__version__ == "0.1.0"
+    assert tsurv.__version__ == "0.1.1"
 
 
 def test_emblem_asset_is_pinned() -> None:
