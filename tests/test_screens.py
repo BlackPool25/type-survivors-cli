@@ -279,19 +279,19 @@ def test_practice_mode_is_no_death() -> None:
     """Practice leaks remove foes and report ids, but HP never drops."""
     state = spawn_enemy(initial_arena(), _word("cat"), distance=0.5)
     foe_id = state.enemies[0].id
-    after, leaked = practice_advance(state, 1.0)
+    after, leaked = practice_advance(state, 1.0, 0.0)
     assert leaked == (foe_id,)
     assert after.hp == state.hp
     for _ in range(10):
         state = spawn_enemy(state, _word("cat"), distance=0.5)
-        state, _ = practice_advance(state, 1.0)
+        state, _ = practice_advance(state, 1.0, 0.0)
     assert state.hp == initial_arena().hp
 
 
 def test_real_advance_still_costs_hp() -> None:
     """The no-death pin is practice-only: real leaks cost LEAK_DAMAGE."""
     state = spawn_enemy(initial_arena(), _word("cat"), distance=0.5)
-    after, _ = advance(state, 1.0)
+    after, _ = advance(state, 1.0, 0.0)
     assert after.hp == 100.0 - LEAK_DAMAGE
 
 

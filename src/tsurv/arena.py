@@ -60,6 +60,9 @@ ELITE_DROP_RATE: Final = 0.10
 HELD_MAX: Final = 3
 """Held item slots: the three shop caches ride here until hotkeyed."""
 
+FROST_SLOW: Final = 0.5
+"""Foe speed factor while a frost veil holds (halved converge)."""
+
 MAX_SIMULTANEOUS: Final = 8
 """Field cap: one wave never deals more foes than the viewport holds."""
 
@@ -68,6 +71,12 @@ SPAWN_BASE_RADIUS: Final = 5.0
 
 SPAWN_RADIUS_STEP: Final = 0.5
 """World units added per level past the first: outer rings buy typing time."""
+
+HEX_DEBUT_WAVE: Final = 4
+"""First wave rostering the HEX skirmisher (fast, thin)."""
+
+ELITE_DEBUT_WAVE: Final = 6
+"""First wave rostering the ELITE bruiser (slow, chain-spark drops)."""
 
 
 def _speed_of(kind: EnemyKind) -> float:
@@ -90,6 +99,22 @@ def _speed_of(kind: EnemyKind) -> float:
 def seconds_to_impact(kind: EnemyKind, distance: float) -> float:
     """Seconds until a foe at `distance` leaks (Task 7 telegraph hook)."""
     return distance / _speed_of(kind)
+
+
+def kind_for_wave(wave: int, index: int) -> EnemyKind:
+    """Wave event table: grunts open, hex debuts at 4, elites at 6.
+
+    The roster cycles by spawn index so mixed waves read as events,
+    not uniform walls; bosses stay scripted outside this table.
+    """
+    roster = [EnemyKind.GRUNT, EnemyKind.GRUNT, EnemyKind.MITE]
+    if wave >= HEX_DEBUT_WAVE:
+        roster += [EnemyKind.HEX, EnemyKind.GRUNT]
+    if wave >= ELITE_DEBUT_WAVE:
+        roster += [EnemyKind.ELITE]
+    if wave <= 1:
+        return EnemyKind.GRUNT
+    return roster[index % len(roster)]
 
 
 def spawn_count_for_level(level: int) -> int:
@@ -379,10 +404,18 @@ def handle_keystroke(  # noqa: PLR0913 - six explicit params per ruling
             return state, outcome
 
 
-def advance(state: ArenaState, dt: float) -> tuple[ArenaState, tuple[EnemyId, ...]]:
-    """Move foes inward; leaks cost HP, clear the lock, and report foe ids."""
+def advance(
+    state: ArenaState,
+    dt: float,
+    now: float,
+) -> tuple[ArenaState, tuple[EnemyId, ...]]:
+    """Move foes inward; leaks cost HP, clear the lock, and report foe ids.
+
+    An active frost veil halves converge speed; expired veils change nothing.
+    """
+    slow = FROST_SLOW if now < state.frost_until else 1.0
     moved = tuple(
-        replace(foe, distance=foe.distance - _speed_of(foe.kind) * dt)
+        replace(foe, distance=foe.distance - _speed_of(foe.kind) * slow * dt)
         for foe in state.enemies
     )
     leaked = tuple(foe.id for foe in moved if foe.distance <= 0.0)

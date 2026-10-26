@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Final
 
 from tsurv.arena import (
+    FROST_SLOW,
     HELD_MAX,
     LEAK_DAMAGE,
     EnemyKind,
@@ -18,6 +19,7 @@ from tsurv.arena import (
     corrupted_display,
     handle_keystroke,
     initial_arena,
+    kind_for_wave,
     merge_window,
     reset_word,
     roll_drop,
@@ -46,6 +48,15 @@ _ABOVE_RATE = 0.50
 _CHAIN_ARCS: Final = 2
 _VITALITY_HP: Final = 130.0
 """Hull with three vitality ranks: 100 + 3 x 10."""
+
+_ROSTER_SPAN: Final = 6
+"""Spawn-index sweep wide enough to cycle any wave roster."""
+
+_HEX_DEBUT: Final = 4
+"""First wave whose roster fields the HEX skirmisher."""
+
+_ELITE_DEBUT: Final = 6
+"""First wave whose roster fields the ELITE bruiser."""
 
 
 def _word(text: str, corruption: Corruption = Corruption.CLEAN) -> Word:
@@ -213,7 +224,7 @@ def test_advance_moves_leaks_and_reports_ids() -> None:
     """Tick movement converges enemies; leaks cost HP and report foe ids."""
     state = spawn_enemy(initial_arena(), _word("cat"), distance=0.5)
     foe_id = state.enemies[0].id
-    state, leaked = advance(state, 1.0)
+    state, leaked = advance(state, 1.0, _NOW)
     assert leaked == (foe_id,)
     assert state.enemies == ()
     assert state.hp == 100.0 - LEAK_DAMAGE
@@ -299,3 +310,33 @@ def test_initial_arena_honors_max_hp() -> None:
     state = initial_arena(hp=_VITALITY_HP, max_hp=_VITALITY_HP)
     assert state.hp == _VITALITY_HP
     assert state.max_hp == _VITALITY_HP
+
+
+def test_frost_slows_the_converge() -> None:
+    """An active veil halves foe speed; an expired one changes nothing."""
+    state = spawn_enemy(initial_arena(), _word("cat"), distance=5.0)
+    state = replace(state, frost_until=_NOW + 10.0)
+    frozen, _ = advance(state, 1.0, _NOW)
+    assert frozen.enemies[0].distance == 5.0 - FROST_SLOW * 1.0
+    state = replace(state, frost_until=_NOW - 1.0)
+    melted, _ = advance(state, 1.0, _NOW)
+    assert melted.enemies[0].distance == 5.0 - 1.0
+
+
+def test_kind_table_debuts_hex_then_elite() -> None:
+    """Wave 1 is grunts only; hex enters at 4, elites at 6."""
+    assert {kind_for_wave(1, index) for index in range(_ROSTER_SPAN)} == {
+        EnemyKind.GRUNT,
+    }
+    assert EnemyKind.HEX in {
+        kind_for_wave(_HEX_DEBUT, index) for index in range(_ROSTER_SPAN)
+    }
+    assert EnemyKind.HEX not in {
+        kind_for_wave(_HEX_DEBUT - 1, index) for index in range(_ROSTER_SPAN)
+    }
+    assert EnemyKind.ELITE in {
+        kind_for_wave(_ELITE_DEBUT, index) for index in range(_ROSTER_SPAN)
+    }
+    assert EnemyKind.ELITE not in {
+        kind_for_wave(_ELITE_DEBUT - 1, index) for index in range(_ROSTER_SPAN)
+    }

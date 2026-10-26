@@ -31,6 +31,7 @@ from tsurv.arena import (
     corrupted_display,
     handle_keystroke,
     initial_arena,
+    kind_for_wave,
     mercy_spawn_factor,
     mercy_tier,
     reset_word,
@@ -65,6 +66,12 @@ from tsurv.combat import (
     TypoStun,
     service_wpm,
     spawn_interval,
+)
+from tsurv.director import (
+    compute_strain,
+    director_step,
+    gap_multiplier,
+    initial_director,
 )
 from tsurv.grammar import GrammarError, generate_boss_sentence
 from tsurv.items import ItemKind, nova_charge, nova_ready
@@ -579,6 +586,7 @@ class ArenaScreen(Screen[None]):
         self._kill_samples: list[KillSample] = []
         self._word_start: float | None = None
         self._strain: float = 0.0
+        self._director = initial_director()
         self._press_times: list[float] = []
         self._best_streak: int = 0
         self._nova_good_seconds: float = 0.0
@@ -962,9 +970,9 @@ class ArenaScreen(Screen[None]):
         )
         before_leak = self._arena
         if self._practice:
-            self._arena, leaked = practice_advance(self._arena, dt)
+            self._arena, leaked = practice_advance(self._arena, dt, now)
         else:
-            self._arena, leaked = advance(self._arena, dt)
+            self._arena, leaked = advance(self._arena, dt, now)
         if leaked:
             names = {foe.id: str(foe.word.text) for foe in before_leak.enemies}
             self._killer = names[leaked[0]]
@@ -981,6 +989,18 @@ class ArenaScreen(Screen[None]):
                 ref = self._app_ref.profile.base_wpm
             gap = spawn_interval(ref, service_wpm(self._kill_samples))
             gap *= mercy_spawn_factor(self._arena.mercy)
+            hp_frac = (
+                self._arena.hp / self._arena.max_hp if self._arena.max_hp > 0 else 0.0
+            )
+            strain = compute_strain(len(self._arena.enemies), MAX_FOES, hp_frac)
+            self._director = director_step(
+                self._director,
+                strain,
+                dt,
+                boss_wave=self._arena.boss_wave,
+            )
+            self._strain = strain
+            gap *= gap_multiplier(self._director.phase)
             if self._clock >= gap and len(self._arena.enemies) < MAX_FOES:
                 self._clock = 0.0
                 self._spawn_foe()
@@ -1083,7 +1103,7 @@ class ArenaScreen(Screen[None]):
             strain=self._strain,
             max_len=opening,
         )
-        kind = EnemyKind.GRUNT if len(shown) % 3 else EnemyKind.MITE
+        kind = kind_for_wave(self._arena.wave, len(shown))
         room = MAX_FOES - len(self._arena.enemies)
         count = min(spawn_count_for_level(self._arena.wave), room)
         if count <= 0:

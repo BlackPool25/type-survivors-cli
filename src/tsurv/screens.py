@@ -397,7 +397,8 @@ def load_checkpoint(directory: Path) -> Checkpoint:
 def practice_advance(
     state: ArenaState,
     dt: float,
+    now: float,
 ) -> tuple[ArenaState, tuple[EnemyId, ...]]:
     """No-death drill tick: foes converge and leak, but HP never drops."""
-    after, leaked = advance(state, dt)
+    after, leaked = advance(state, dt, now)
     return replace(after, hp=max(after.hp, state.hp)), leaked

@@ -89,7 +89,7 @@ def test_advance_reports_foe_ids() -> None:
     )
     ids = {foe.id for foe in state.enemies}
     assert len(ids) == len(state.enemies)
-    after, leaked = advance(state, 60.0)
+    after, leaked = advance(state, 60.0, 0.0)
     assert after.enemies == ()
     assert set(leaked) == ids
 
@@ -102,6 +102,6 @@ def test_duplicate_leaks_count_every_foe() -> None:
         level=3,
         start_angle=0.0,
     )
-    after, leaked = advance(state, 60.0)
+    after, leaked = advance(state, 60.0, 0.0)
     assert after.enemies == ()
     assert leaked_untyped(state, leaked) == len("cat") * len(leaked)
