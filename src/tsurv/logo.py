@@ -8,6 +8,7 @@ same string) and owns the hub footer/decrypt helpers.
 from __future__ import annotations
 
 import io
+from importlib import resources
 from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, NewType, assert_never
@@ -23,10 +24,10 @@ if TYPE_CHECKING:
 RenderedLogo = NewType("RenderedLogo", str)
 """Baked logo cells: ANSI half-blocks in color, plain blocks in mono."""
 
-TAGLINE: Final = "type fast or be eaten by the void"
+TAGLINE: Final = "╰~-~-~-~-~── ※ TYPE FAST OR BE EATEN BY THE VOID ※ ──~-~-~-~-~╯"
 """Hub subtitle; the decrypt-in effect settles on exactly this line."""
 
-_LOGO_PNG: Final = Path(__file__).resolve().parent.parent.parent / "assets" / "logo.png"
+_LOGO_PNG: Final = Path(str(resources.files("tsurv") / "assets" / "logo.png"))
 """Pre-sized art source; resolved from the package location, never CWD."""
 
 _MIN_CELLS: Final = 8

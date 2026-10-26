@@ -8,6 +8,7 @@ through par-textual-image; this module only selects *what* shows.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from importlib import resources
 from math import cos
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, assert_never
@@ -21,8 +22,8 @@ from tsurv.words import Corruption, Tier
 if TYPE_CHECKING:
     from tsurv.juice import JuiceState, Particle
 
-ASSETS_DIR: Final = Path(__file__).resolve().parent.parent.parent / "assets"
-"""Repo sprite art: boss/grunt/mite/hex/core PNGs plus the void backdrop."""
+ASSETS_DIR: Final = Path(str(resources.files("tsurv") / "assets"))
+"""Packaged sprite art: boss/grunt/mite/hex/core PNGs plus the void backdrop."""
 
 APPROACH_MAX: Final = 16
 """Widest approach indent in cells: far foes start right, glide core-ward."""
@@ -76,18 +77,18 @@ _CORE_PULSE: Final = 4
 """Core pulse period in ticks: frame swap reads as breathing."""
 
 _GLYPH_FONT: Final[dict[str, tuple[str, str, str]]] = {
-    "E": ("███", "██ ", "███"),
-    "I": (" █ ", " █ ", " █ "),
-    "O": ("███", "█ █", "███"),
-    "P": ("███", "███", "█  "),
-    "R": ("███", "███", "█ █"),
-    "S": (" ██", " █ ", "██ "),
-    "T": ("███", " █ ", " █ "),
-    "U": ("█ █", "█ █", "███"),
-    "V": ("█ █", "█ █", " █ "),
-    "Y": ("█ █", " █ ", " █ "),
+    "E": ("╔═╗", "║╣ ", "╚═╝"),
+    "I": ("╦", "║", "╩"),
+    "O": ("╔═╗", "║ ║", "╚═╝"),
+    "P": ("╔═╗", "╠═╝", "╩  "),
+    "R": ("╦═╗", "╠╦╝", "╩╚═"),
+    "S": ("╔═╗", "╚═╗", "╚═╝"),
+    "T": ("╔╦╗", " ║ ", " ╩ "),
+    "U": ("╦ ╦", "║ ║", "╚═╝"),
+    "V": ("╦  ╦", "╚╗╔╝", " ╚╝ "),
+    "Y": ("╦ ╦", "╚╦╝", " ╩ "),
 }
-"""3x3 block capitals for the hub banner (only banner letters, nothing else)."""
+"""3x3 double-line runic outline capitals for the hub banner."""
 
 BANNER_GRADIENT: Final[tuple[str, str, str]] = ("#FF2A6D", "#B537A1", "#952CF5")
 """Banner row colors: luminous blood crimson, arcane amethyst, void purple."""
@@ -101,9 +102,10 @@ def _render_word(word: str) -> tuple[str, str, str]:
 
 
 def _render_banner(words: tuple[str, ...]) -> tuple[str, str, str]:
-    """Set banner words in the block font, triple-space word separators."""
+    """Set banner words in the block font with gothic stone pillars."""
     rendered = [_render_word(word) for word in words]
-    rows = ["   ".join(parts) for parts in zip(*rendered, strict=True)]
+    inner = ["   ".join(parts) for parts in zip(*rendered, strict=True)]
+    rows = [f"║ ░▒ {row} ▒░ ║" for row in inner]
     return (rows[0], rows[1], rows[2])
 
 

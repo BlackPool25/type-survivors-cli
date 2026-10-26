@@ -451,8 +451,9 @@ class ArenaScreen(Screen[None]):
     CSS: ClassVar[str] = (
         "Screen { background: #0B0B12; color: #CACACA; }\n"
         "#arena, #stage, #field, .foe-sprite, #core-sprite { background: #0B0B12; }\n"
-        "#topbar { width: 1fr; height: 3; border: solid #952CF5; color: #CACACA; }\n"
-        "#arena { height: 1fr; border: solid #952CF5; }\n"
+        "#topbar { width: 1fr; height: 3; border: solid #7B2CBF; color: #CACACA; "
+        "background: #12101F; border-title-align: center; }\n"
+        "#arena { height: 1fr; border: solid #7B2CBF; border-title-align: center; }\n"
         "#stage { height: 1fr; }\n"
         "#field { width: 1fr; height: 1fr; }\n"
         ".foe-sprite { position: absolute; width: 10; height: 6; }\n"
@@ -465,9 +466,9 @@ class ArenaScreen(Screen[None]):
         "#pixdiag { width: 1fr; height: 1; color: #24AEEB; text-align: center; }\n"
         "#botrail { width: 1fr; height: 1; color: #CACACA; }\n"
         "#pause { width: 1fr; height: auto; color: #FFD23F; "
-        "border: solid #952CF5; text-align: center; }\n"
-        "#typing { width: 1fr; height: 3; border: solid #952CF5; dock: bottom; "
-        "color: #CACACA; }\n"
+        "border: solid #7B2CBF; text-align: center; border-title-align: center; }\n"
+        "#typing { width: 1fr; height: 3; border: solid #7B2CBF; dock: bottom; "
+        "color: #CACACA; background: #12101F; border-title-align: center; }\n"
         "#stun { height: 1; color: #FFD23F; }\n"
         "#guard { height: 1; color: #FF2A2A; text-align: center; }\n"
         "#death { height: 2; color: #FF2A2A; text-style: bold; }\n"
@@ -715,9 +716,13 @@ class ArenaScreen(Screen[None]):
     def compose(self) -> ComposeResult:
         """Header, true-2D stage, boss bars, fx, diagnostics, typing, flags."""
         true_pixel = self._pick.kind.true_pixel
-        yield Label("", id="topbar")
+        topbar = Label("", id="topbar")
+        topbar.border_title = " ᛟ RUNIC LIFE FORCE ᛟ "
+        yield topbar
         yield Label("", id="bossbanner")
-        with Vertical(id="arena"):
+        arena_box = Vertical(id="arena")
+        arena_box.border_title = " ༺~*~ ⚔ THE SUNKEN CRYPT ⚔ ~*~༻ "
+        with arena_box:
             with Vertical(id="stage"):
                 yield ArenaCanvas(widget_id="field")
                 if true_pixel:
@@ -734,7 +739,9 @@ class ArenaScreen(Screen[None]):
         yield Label("", id="pixdiag")
         yield Label("", id="botrail")
         yield Label("", id="pause")
-        yield Label("", id="typing")
+        typing_pane = Label("", id="typing")
+        typing_pane.border_title = " ⊰─~-~ ✦ RUNIC INCANTATION DECK ✦ ~-~-⊱ "
+        yield typing_pane
         yield Label("", id="stun")
         yield Label("widen to 80+ columns to play", id="guard")
         yield Label("", id="death")
@@ -743,7 +750,7 @@ class ArenaScreen(Screen[None]):
         """First paint, explicit protocol pin, viewport guard, then 60fps tick."""
         if self._pick.kind.true_pixel:
             for widget in self.query(TerminalImage):
-                widget.force_protocol(self._pick.kind.value)  # type: ignore[arg-type]
+                widget.force_protocol(self._pick.kind.value)  # pyright: ignore[reportArgumentType]  # type: ignore[arg-type]
         self._audio_player = find_player() if default_enabled() else None
         self._stop_ambient = start_ambient(
             self._audio_player,
@@ -1871,18 +1878,22 @@ def _hub_logo_cells(height: int) -> int:
 
 
 def _hub_logo_text(cells_w: int) -> Text | str:
-    """Ornate gothic crossblade sigil crest anchoring the top of the header."""
+    """Ornate gothic crossblade and vine arch anchoring the top of the title marquee."""
+    del cells_w
     mono = not colors_enabled()
-    arm_len = max(min((cells_w - 8) // 2, 20), 4)
-    arm = "═" * arm_len
+    raw = "╭──~-~-~-~-~-~-~-~ ⚔ ─── ❖ ─── ✦ ─── ❖ ─── ⚔ ~-~-~-~-~-~-~-~──╮"
     if mono:
-        return f"⚔ {arm} ✦ {arm} ⚔"
+        return raw
     text = Text()
-    _ = text.append("⚔ ", style="#FF2A6D bold")
-    _ = text.append(f"{arm} ", style="#552288")
+    _ = text.append("╭──", style="#4C3D6E")
+    _ = text.append("~-~-~-~-~-~-~-~", style="#2D724F")
+    _ = text.append(" ⚔ ", style="#FF2A6D bold")
+    _ = text.append("─── ❖ ─── ", style="#6B21A8")
     _ = text.append("✦", style="#FFD23F bold")
-    _ = text.append(f" {arm}", style="#552288")
-    _ = text.append(" ⚔", style="#FF2A6D bold")
+    _ = text.append(" ─── ❖ ─── ", style="#6B21A8")
+    _ = text.append("⚔", style="#FF2A6D bold")
+    _ = text.append(" ~-~-~-~-~-~-~-~", style="#2D724F")
+    _ = text.append("──╮", style="#4C3D6E")
     return text
 
 
@@ -1904,14 +1915,15 @@ class HubScreen(Screen[None]):
         "#hub-logo { width: 1fr; height: auto; text-align: center; }\n"
         "#hub-banner { width: 1fr; height: 3; color: #FF2A2A; "
         "text-style: bold; text-align: center; content-align: center middle; }\n"
-        "#subtitle { width: 1fr; height: 1; color: #B57CFF; text-align: center; }\n"
-        "#hub-header { width: 80%; height: 4; border: solid #952CF5; "
-        "background: #12121e; }\n"
+        "#subtitle { width: 1fr; height: 1; color: #2D724F; text-align: center; }\n"
+        "#hub-header { width: 80%; height: 4; border: solid #7B2CBF; "
+        "background: #12101F; border-title-align: center; }\n"
         "#gold { width: 1fr; height: 1; color: #FFD23F; text-style: bold; "
         "text-align: center; }\n"
         "#hub-greeting { width: 1fr; height: 1; color: #CACACA; text-align: center; }\n"
-        "#hub-panel { width: 80%; height: 9; border: solid #952CF5; "
-        "background: #12121e; }\n"
+        "#hub-panel { width: 80%; height: 9; border: solid #7B2CBF; "
+        "background: #12101F; border-title-align: center; "
+        "border-subtitle-align: center; }\n"
         "#hub-list { width: 1fr; height: 6; content-align: center middle; }\n"
         "#hub-message { width: 1fr; height: 1; color: #FFD23F; text-align: center; }\n"
         "#hub-stats { width: 1fr; height: 1; color: #FFD23F; text-align: center; }\n"
@@ -1948,8 +1960,10 @@ class HubScreen(Screen[None]):
             )
             yield Label(hub_banner_text(mono=not colors_enabled()), id="hub-banner")
             yield Label(TAGLINE, id="subtitle")
-            with Center(), Vertical(id="hub-header"):
-                yield Label(f"gold {self._app_ref.profile.gold}", id="gold")
+            header_box = Vertical(id="hub-header")
+            header_box.border_title = " ༺~*~ ᛟ CRYPT OF SOULS ᛟ ~*~༻ "
+            with Center(), header_box:
+                yield Label(f"✦ {self._app_ref.profile.gold} GOLD BANKED ✦", id="gold")
                 yield Label(
                     hub_greeting(
                         gold=self._app_ref.profile.gold,
@@ -1957,7 +1971,10 @@ class HubScreen(Screen[None]):
                     ),
                     id="hub-greeting",
                 )
-            with Center(), Vertical(id="hub-panel"):
+            panel_box = Vertical(id="hub-panel")
+            panel_box.border_title = " ༺~*~ ⚔ GRIMOIRE OF TRIALS ⚔ ~*~༻ "
+            panel_box.border_subtitle = " ⊰─~-~-~ ✦ ~-~-~-⊱ "
+            with Center(), panel_box:
                 yield Label("", id="hub-list")
                 yield Label("", id="hub-message")
             yield Label(hub_footer(self._app_ref.profile), id="hub-stats")

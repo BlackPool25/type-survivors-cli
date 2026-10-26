@@ -152,7 +152,7 @@ def test_ambient_line_is_deterministic_and_sized() -> None:
 def test_banner_prerendered_once_and_reused_by_value() -> None:
     """Three pre-rendered rows; every call copies by value, never by reference."""
     assert len(HUB_BANNER) == _BANNER_ROWS
-    assert all(row.strip(" █") == "" and row.strip() for row in HUB_BANNER)
+    assert all(row.strip() for row in HUB_BANNER)
     first = hub_banner_text(mono=True)
     second = hub_banner_text(mono=True)
     assert first.plain == second.plain
