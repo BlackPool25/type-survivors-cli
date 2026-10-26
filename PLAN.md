@@ -1,5 +1,14 @@
 # TYPE SURVIVORS (CLI) — Plan v0.2 (Locked decisions + systems)
 
+> SHIPPED: 0.1.0 on PyPI/GitHub; 0.1.1 fair-curve build adds: occlude-proof
+> sprite boxes (foes-core-chips paint order), linear wave baseline easing
+> 3.0s→1.6s with a ±20% adapt leash, wave-1 rails (grunt-only, ≤4-char
+> words, slowest gap), hub-voiced shop/settings/recap panels. Difficulty
+> engine below now reads: service-time pace → Glicko-style rating →
+> wave baseline × leash. The rest of this doc is the historical design
+> record (some tuning numbers superseded by src/tsurv/{combat,director,
+> words,rating}.py — code is truth).
+
 > Status: ALL CORE DECISIONS LOCKED. Engine Python Textual, sound bleeps, endless daemon invasion.
 
 ## 1. Locked (your picks)

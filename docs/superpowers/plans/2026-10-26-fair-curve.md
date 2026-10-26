@@ -91,6 +91,7 @@ def test_wave_baseline_ramps_linearly() -> None:
     assert gaps == sorted(gaps, reverse=True)
     assert gaps[0] > 3.0 and gaps[-1] == gaps[-2] == 1.2
 
+
 def test_adapt_multiplier_leashed() -> None:
     assert adapt_multiplier(40.0, 200.0) == 0.8
     assert adapt_multiplier(40.0, 1.0) == 1.2
@@ -139,6 +140,7 @@ def test_max_len_ramps_with_wave() -> None:
     assert max_len_for_wave(1) == 4
     assert max_len_for_wave(5) == 8
     assert max_len_for_wave(30) == 12
+
 
 def test_wave_one_spawns_grunts_only() -> None:
     assert set(kind_for_wave(1)) == {EnemyKind.GRUNT}  # adjust to actual signature
